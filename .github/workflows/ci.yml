@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  RUST_VERSION: "1.96.0"
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: fmt + clippy + test + package
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+          cache: false
+          rustflags: ""
+      - uses: typst-community/setup-typst@v5
+        with:
+          typst-version: 0.15.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo publish --dry-run --locked
+
+  smoke:
+    name: CLI smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          cache: false
+          rustflags: ""
+      - uses: typst-community/setup-typst@v5
+        with:
+          typst-version: 0.15.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install build deps + jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake jq pkg-config
+      - name: Build conpub
+        run: cargo build --locked
+      - name: Smoke
+        run: |
+          set -euo pipefail
+          BIN="$GITHUB_WORKSPACE/target/debug/conpub"
+          tmp="$(mktemp -d)"
+          mkdir -p "$tmp/home" "$tmp/kb/projects/cuda-agent" "$tmp/project"
+          printf '# Notes\n\nLocal smoke content.\n' > "$tmp/kb/projects/cuda-agent/notes.md"
+
+          "$BIN" --version
+
+          cd "$tmp/project"
+          export CONPUB_HOME="$tmp/home"
+          "$BIN" root "$tmp/kb" --base-url https://example.atlassian.net/wiki \
+            | jq -e '.ok == true and .data.root != null'
+          "$BIN" bind projects/cuda-agent --space GPU --parent 123456789 \
+            | jq -e '.ok == true and .data.binding.source == "projects/cuda-agent"'
+          "$BIN" resolve \
+            | jq -e '.data.target.space == "GPU" and .data.target.parent_id == "123456789"'
+          "$BIN" sync --dry-run \
+            | jq -e '.ok == true and .data.summary.create == 1'
+
+  cross:
+    name: zigbuild ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/rust-cross/cargo-zigbuild@sha256:dce4ea213244423439d97a2070031c6ea287fc32f01b0aaa38f8b4d46f52e68c
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-gnu
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain + target
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config
+          rustup set profile minimal
+          rustup toolchain install "${RUST_VERSION}" --profile minimal --no-self-update
+          rustup target add --toolchain "${RUST_VERSION}" "${{ matrix.target }}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: zigbuild-${{ matrix.target }}
+      - name: Cross-build
+        run: cargo +${RUST_VERSION} zigbuild --locked --release --target ${{ matrix.target }}

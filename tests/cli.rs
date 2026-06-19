@@ -1,0 +1,979 @@
+use assert_cmd::Command;
+use chrono::{NaiveDate, Utc};
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::env;
+use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock, mpsc};
+use std::thread;
+use std::time::Duration;
+use tempfile::TempDir;
+use typub_core::{Content, ContentFormat, ContentMeta};
+use typub_storage::{PublishResult, StatusTracker};
+
+const SYNC_STATE_VERSION: u32 = 2;
+static CWD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+struct Fixture {
+    _tmp: TempDir,
+    home: PathBuf,
+    root: PathBuf,
+    project: PathBuf,
+}
+
+impl Fixture {
+    fn new() -> Self {
+        let tmp = TempDir::new().expect("create tempdir");
+        let home = tmp.path().join("home");
+        let root = tmp.path().join("nv-kb");
+        let project = tmp.path().join("project");
+        let source = root.join("projects/cuda-agent/perf");
+
+        fs::create_dir_all(&home).expect("create home");
+        fs::create_dir_all(&source).expect("create source");
+        fs::create_dir_all(&project).expect("create project");
+        fs::write(
+            source.join("_index.md"),
+            "# Performance\n\nPerformance notes.\n",
+        )
+        .expect("write directory index");
+        fs::write(
+            source.join("occupancy.md"),
+            "# Occupancy\n\nWarp occupancy matters for latency hiding.\n",
+        )
+        .expect("write markdown");
+        fs::write(root.join("projects/cuda-agent/notes.typ"), "= CUDA Notes\n")
+            .expect("write typst");
+
+        Self {
+            _tmp: tmp,
+            home,
+            root,
+            project,
+        }
+    }
+
+    fn command(&self) -> Command {
+        let mut cmd = Command::cargo_bin("conpub").expect("find conpub binary");
+        cmd.env("CONPUB_HOME", &self.home)
+            .env_remove("CONFLUENCE_EMAIL")
+            .env_remove("CONFLUENCE_API_KEY")
+            .env_remove("CONFLUENCE_API_TOKEN")
+            .current_dir(&self.project);
+        cmd
+    }
+}
+
+#[test]
+fn root_bind_resolve_emit_json() {
+    let fixture = Fixture::new();
+
+    let root = run_json(
+        fixture
+            .command()
+            .arg("root")
+            .arg(&fixture.root)
+            .arg("--base-url")
+            .arg("https://example.atlassian.net/wiki"),
+    );
+    assert_eq!(root["ok"], true);
+    assert_eq!(
+        root["data"]["base_url"],
+        "https://example.atlassian.net/wiki"
+    );
+
+    let bind = run_json(
+        fixture
+            .command()
+            .arg("bind")
+            .arg("projects/cuda-agent")
+            .arg("--space")
+            .arg("GPU")
+            .arg("--parent")
+            .arg("123456789"),
+    );
+    assert_eq!(bind["ok"], true);
+    assert_eq!(bind["data"]["binding"]["source"], "projects/cuda-agent");
+
+    let resolve = run_json(fixture.command().arg("resolve"));
+    assert_eq!(resolve["ok"], true);
+    assert_eq!(resolve["data"]["source"], "projects/cuda-agent");
+    assert_eq!(resolve["data"]["target"]["space"], "GPU");
+    assert_eq!(resolve["data"]["target"]["parent_id"], "123456789");
+}
+
+#[test]
+fn root_and_bind_accept_conpub_environment_defaults() {
+    let fixture = Fixture::new();
+
+    let root = run_json(
+        fixture
+            .command()
+            .env("CONPUB_KB_ROOT", &fixture.root)
+            .env("CONPUB_BASE_URL", "https://env.atlassian.net/wiki")
+            .arg("root"),
+    );
+    assert_eq!(root["ok"], true);
+    assert_eq!(root["data"]["root"], fixture.root.display().to_string());
+    assert_eq!(root["data"]["base_url"], "https://env.atlassian.net/wiki");
+
+    let bind = run_json(
+        fixture
+            .command()
+            .env("CONPUB_SPACE", "ENV")
+            .env("CONPUB_PARENT_ID", "987654321")
+            .arg("bind")
+            .arg("projects/cuda-agent"),
+    );
+    assert_eq!(bind["ok"], true);
+    assert_eq!(bind["data"]["binding"]["space"], "ENV");
+    assert_eq!(bind["data"]["binding"]["parent_id"], "987654321");
+}
+
+#[test]
+fn bind_and_resolve_can_use_environment_root_without_user_config() {
+    let fixture = Fixture::new();
+
+    let bind = run_json(
+        fixture
+            .command()
+            .env("CONPUB_KB_ROOT", &fixture.root)
+            .env("CONPUB_BASE_URL", "https://env.atlassian.net/wiki")
+            .env("CONPUB_SPACE", "ENV")
+            .env("CONPUB_PARENT_ID", "987654321")
+            .arg("bind")
+            .arg("projects/cuda-agent"),
+    );
+    assert_eq!(bind["ok"], true);
+    assert!(!fixture.home.join("conpub.toml").exists());
+
+    let resolve = run_json(
+        fixture
+            .command()
+            .env("CONPUB_KB_ROOT", &fixture.root)
+            .arg("resolve"),
+    );
+    assert_eq!(resolve["ok"], true);
+    assert_eq!(resolve["data"]["root"], fixture.root.display().to_string());
+    assert_eq!(
+        resolve["data"]["target"]["base_url"],
+        "https://env.atlassian.net/wiki"
+    );
+    assert_eq!(resolve["data"]["target"]["space"], "ENV");
+    assert_eq!(resolve["data"]["target"]["parent_id"], "987654321");
+}
+
+#[test]
+fn missing_binding_hint_mentions_conpub_target_environment_defaults() {
+    let fixture = Fixture::new();
+    run_json(fixture.command().arg("root").arg(&fixture.root));
+
+    let value = run_failure_json(fixture.command().arg("resolve"));
+
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["code"], "CONFIG_MISSING_BINDING");
+    let message = value["message"].as_str().expect("message string");
+    assert!(message.contains("CONPUB_SPACE"));
+    assert!(message.contains("CONPUB_PARENT_ID"));
+    assert!(message.contains("CONPUB_BASE_URL"));
+}
+
+#[test]
+fn search_read_and_plan_use_bound_source() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let search = run_json(fixture.command().arg("search").arg("warp occupancy"));
+    assert_eq!(search["ok"], true);
+    assert_eq!(search["data"]["matches"][0]["line"], 3);
+    assert_eq!(
+        search["data"]["matches"][0]["read_ref"],
+        "projects/cuda-agent/perf/occupancy.md:3"
+    );
+
+    let read_ref = search["data"]["matches"][0]["read_ref"]
+        .as_str()
+        .expect("read_ref is string");
+    let read = run_json(
+        fixture
+            .command()
+            .arg("read")
+            .arg(read_ref)
+            .arg("--context")
+            .arg("0"),
+    );
+    assert_eq!(read["ok"], true);
+    assert_eq!(
+        read["data"]["lines"][0]["text"],
+        "Warp occupancy matters for latency hiding."
+    );
+
+    let plan = run_json(fixture.command().arg("plan"));
+    assert_eq!(plan["ok"], true);
+    assert_eq!(plan["data"]["count"], 3);
+}
+
+#[test]
+fn document_titles_use_typst_introspection_with_filename_fallback() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    fs::write(
+        fixture.root.join("projects/cuda-agent/rich-markdown.md"),
+        "# **Markdown** _Title_\n\n![missing](missing.png)\n",
+    )
+    .expect("write rich markdown");
+    fs::write(
+        fixture.root.join("projects/cuda-agent/rich-typst.typ"),
+        "= #strong[Typst] Title\n",
+    )
+    .expect("write rich typst");
+    fs::write(
+        fixture.root.join("projects/cuda-agent/no-heading.md"),
+        "Body without heading.\n",
+    )
+    .expect("write headingless markdown");
+
+    let plan = run_json(fixture.command().arg("plan"));
+
+    assert_eq!(plan["ok"], true);
+    assert_eq!(
+        plan_item(&plan, "projects/cuda-agent/rich-markdown.md")["title"],
+        "Markdown Title"
+    );
+    assert_eq!(
+        plan_item(&plan, "projects/cuda-agent/rich-typst.typ")["title"],
+        "Typst Title"
+    );
+    assert_eq!(
+        plan_item(&plan, "projects/cuda-agent/no-heading.md")["title"],
+        "no-heading"
+    );
+}
+
+#[test]
+fn index_builds_and_search_uses_fresh_index() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let index = run_json(fixture.command().arg("index"));
+    assert_eq!(index["ok"], true);
+    assert_eq!(index["data"]["documents"], 3);
+
+    let search = run_json(fixture.command().arg("search").arg("warp occupancy"));
+    assert_eq!(search["ok"], true);
+    assert_eq!(search["data"]["index"]["used"], true);
+    assert_eq!(
+        search["data"]["matches"][0]["read_ref"],
+        "projects/cuda-agent/perf/occupancy.md:3"
+    );
+}
+
+#[test]
+fn publish_dry_run_returns_staged_items_without_credentials() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let dry_run = run_json(fixture.command().arg("publish").arg("--dry-run"));
+    assert_eq!(dry_run["ok"], true);
+    assert_eq!(dry_run["data"]["dry_run"], true);
+    assert_eq!(dry_run["data"]["count"], 3);
+    assert_eq!(dry_run["data"]["items"][0]["status"], "dry_run");
+    let root_item = dry_run["data"]["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|item| item["path"] == "projects/cuda-agent/notes.typ")
+        .expect("root item");
+    assert!(root_item["parent_path"].is_null());
+    let child_item = dry_run["data"]["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|item| item["path"] == "projects/cuda-agent/perf/occupancy.md")
+        .expect("child item");
+    assert_eq!(
+        child_item["parent_path"],
+        "projects/cuda-agent/perf/_index.md"
+    );
+    assert!(child_item["parent_id"].is_null());
+}
+
+#[test]
+fn publish_requires_confirmation_for_remote_writes() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let assert = fixture.command().arg("publish").assert().failure();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: Value = serde_json::from_str(&stdout).expect("parse JSON");
+
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["code"], "CONFIRMATION_REQUIRED");
+}
+
+#[test]
+fn publish_yes_reaches_typub_backend_and_validates_credentials() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let assert = fixture
+        .command()
+        .arg("publish")
+        .arg("--yes")
+        .assert()
+        .failure();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: Value = serde_json::from_str(&stdout).expect("parse JSON");
+
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["code"], "PUBLISH_CONFIG_ERROR");
+}
+
+#[test]
+fn publish_missing_base_url_hint_mentions_conpub_environment_default() {
+    let fixture = Fixture::new();
+    run_json(fixture.command().arg("root").arg(&fixture.root));
+    run_json(
+        fixture
+            .command()
+            .arg("bind")
+            .arg("projects/cuda-agent")
+            .arg("--space")
+            .arg("GPU")
+            .arg("--parent")
+            .arg("123456789"),
+    );
+
+    let value = run_failure_json(fixture.command().arg("publish").arg("--yes"));
+
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["code"], "CONFIG_MISSING_BASE_URL");
+    assert!(
+        value["message"]
+            .as_str()
+            .expect("message string")
+            .contains("CONPUB_BASE_URL")
+    );
+}
+
+#[test]
+fn sync_dry_run_classifies_new_documents_without_credentials() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let sync = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    assert_eq!(sync["ok"], true);
+    assert_eq!(sync["data"]["dry_run"], true);
+    assert_eq!(sync["data"]["count"], 3);
+    assert_eq!(sync["data"]["publishable"], 3);
+    assert_eq!(sync["data"]["summary"]["create"], 3);
+    assert_eq!(sync["data"]["summary"]["update"], 0);
+    assert_eq!(sync["data"]["items"][0]["action"], "create");
+    assert_eq!(sync["data"]["items"][0]["status"], "pending");
+    assert!(sync["data"]["items"][0]["fingerprint"].is_string());
+}
+
+#[test]
+fn sync_requires_confirmation_for_remote_writes() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let assert = fixture.command().arg("sync").assert().failure();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: Value = serde_json::from_str(&stdout).expect("parse JSON");
+
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["code"], "CONFIRMATION_REQUIRED");
+}
+
+#[test]
+fn sync_yes_reaches_typub_backend_and_validates_credentials() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let assert = fixture
+        .command()
+        .arg("sync")
+        .arg("--yes")
+        .assert()
+        .failure();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).expect("stdout utf8");
+    let value: Value = serde_json::from_str(&stdout).expect("parse JSON");
+
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["code"], "PUBLISH_CONFIG_ERROR");
+}
+
+#[test]
+fn sync_uses_state_to_skip_unchanged_and_detect_update_and_deleted() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let first = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run(&fixture, &first);
+
+    let unchanged = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    assert_eq!(unchanged["data"]["publishable"], 0);
+    assert_eq!(unchanged["data"]["summary"]["unchanged"], 3);
+
+    fs::write(
+        fixture.root.join("projects/cuda-agent/perf/occupancy.md"),
+        "# Occupancy\n\nWarp occupancy changed.\n",
+    )
+    .expect("update markdown");
+    fs::remove_file(fixture.root.join("projects/cuda-agent/notes.typ")).expect("remove typst");
+
+    let changed = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    assert_eq!(changed["data"]["summary"]["update"], 1);
+    assert_eq!(changed["data"]["summary"]["deleted"], 1);
+    assert_eq!(changed["data"]["publishable"], 1);
+}
+
+#[test]
+fn sync_path_subset_limits_plan_and_omits_global_deleted_entries() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let first = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run(&fixture, &first);
+    fs::remove_file(fixture.root.join("projects/cuda-agent/notes.typ")).expect("remove typst");
+
+    let subset = run_json(
+        fixture
+            .command()
+            .arg("sync")
+            .arg("--dry-run")
+            .arg("perf/occupancy.md"),
+    );
+
+    assert_eq!(subset["ok"], true);
+    assert_eq!(subset["data"]["subset"], true);
+    assert_eq!(subset["data"]["count"], 2);
+    assert_eq!(subset["data"]["summary"]["deleted"], 0);
+    assert!(
+        subset["data"]["items"]
+            .as_array()
+            .expect("items array")
+            .iter()
+            .any(|item| item["path"] == "projects/cuda-agent/perf/occupancy.md")
+    );
+}
+
+#[test]
+fn sync_rejects_missing_hierarchy_index_for_non_root_doc() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    fs::remove_file(fixture.root.join("projects/cuda-agent/perf/_index.md"))
+        .expect("remove directory index");
+
+    let value = run_failure_json(fixture.command().arg("sync").arg("--dry-run"));
+
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["code"], "HIERARCHY_INDEX_MISSING");
+}
+
+#[test]
+fn sync_path_subset_includes_parent_index_page() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let subset = run_json(
+        fixture
+            .command()
+            .arg("sync")
+            .arg("--dry-run")
+            .arg("perf/occupancy.md"),
+    );
+
+    assert_eq!(subset["ok"], true);
+    assert_eq!(subset["data"]["count"], 2);
+    assert_eq!(subset["data"]["publishable"], 2);
+    let items = subset["data"]["items"].as_array().expect("items array");
+    assert_eq!(items[0]["path"], "projects/cuda-agent/perf/_index.md");
+    assert_eq!(items[1]["path"], "projects/cuda-agent/perf/occupancy.md");
+    assert_eq!(
+        items[1]["parent_path"],
+        "projects/cuda-agent/perf/_index.md"
+    );
+}
+
+#[test]
+fn sync_rejects_conflicting_hierarchy_index_documents() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    fs::write(
+        fixture.root.join("projects/cuda-agent/perf/index.md"),
+        "# Conflicting Index\n",
+    )
+    .expect("write conflicting directory index");
+
+    let value = run_failure_json(fixture.command().arg("sync").arg("--dry-run"));
+
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["code"], "HIERARCHY_INDEX_CONFLICT");
+}
+
+#[test]
+fn sync_rejects_unsupported_concurrency() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let value = run_failure_json(
+        fixture
+            .command()
+            .arg("sync")
+            .arg("--dry-run")
+            .arg("--concurrency")
+            .arg("2"),
+    );
+
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["code"], "CONCURRENCY_UNSUPPORTED");
+}
+
+#[test]
+fn sync_archive_deleted_dry_run_marks_deleted_pages_with_ids() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    let first = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run(&fixture, &first);
+    seed_typub_platform_status(&fixture, &first, "projects/cuda-agent/notes.typ", "42");
+    fs::remove_file(fixture.root.join("projects/cuda-agent/notes.typ")).expect("remove typst");
+
+    let sync = run_json(
+        fixture
+            .command()
+            .arg("sync")
+            .arg("--dry-run")
+            .arg("--archive-deleted"),
+    );
+
+    let deleted = sync["data"]["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|item| item["action"] == "deleted")
+        .expect("deleted item");
+    assert_eq!(deleted["status"], "pending_archive");
+    assert_eq!(deleted["platform_id"], "42");
+}
+
+#[test]
+fn sync_archive_deleted_yes_removes_archived_state_entries() {
+    let fixture = Fixture::new();
+    let (base_url, request_rx) = start_archive_server();
+    configure_with_base_url(&fixture, &base_url);
+    let first = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run_with_base_url(&fixture, &first, &base_url);
+    seed_typub_platform_status(&fixture, &first, "projects/cuda-agent/notes.typ", "42");
+    fs::remove_file(fixture.root.join("projects/cuda-agent/notes.typ")).expect("remove typst");
+
+    let sync = run_json(
+        fixture
+            .command()
+            .env("CONFLUENCE_EMAIL", "agent@example.com")
+            .env("CONFLUENCE_API_KEY", "token")
+            .arg("sync")
+            .arg("--yes")
+            .arg("--archive-deleted"),
+    );
+
+    assert_eq!(sync["ok"], true);
+    let request = request_rx.recv().expect("archive request");
+    assert!(request.contains("POST /wiki/rest/api/content/archive"));
+    assert!(request.contains("\"id\":42"));
+
+    let state: Value =
+        serde_json::from_str(&fs::read_to_string(sync_state_path(&fixture)).expect("read state"))
+            .expect("parse state");
+    assert!(state["documents"]["projects/cuda-agent/notes.typ"].is_null());
+}
+
+#[test]
+fn sync_archive_deleted_yes_hides_failed_archive_response_body() {
+    let fixture = Fixture::new();
+    let hidden_body = "body-should-not-appear";
+    let (base_url, request_rx) =
+        start_archive_server_with_response("500 Internal Server Error", hidden_body);
+    configure_with_base_url(&fixture, &base_url);
+    let first = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run_with_base_url(&fixture, &first, &base_url);
+    seed_typub_platform_status(&fixture, &first, "projects/cuda-agent/notes.typ", "42");
+    fs::remove_file(fixture.root.join("projects/cuda-agent/notes.typ")).expect("remove typst");
+
+    let sync = run_failure_json(
+        fixture
+            .command()
+            .env("CONFLUENCE_EMAIL", "agent@example.com")
+            .env("CONFLUENCE_API_KEY", "token")
+            .arg("sync")
+            .arg("--yes")
+            .arg("--archive-deleted"),
+    );
+
+    assert_eq!(sync["ok"], false);
+    assert_eq!(sync["code"], "ARCHIVE_REQUEST_FAILED");
+    let message = sync["message"].as_str().expect("message");
+    assert!(message.contains("500 Internal Server Error"));
+    assert!(!message.contains(hidden_body));
+    let request = request_rx.recv().expect("archive request");
+    assert!(request.contains("POST /wiki/rest/api/content/archive"));
+}
+
+#[test]
+fn sync_fingerprint_includes_shared_assets() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    fs::create_dir_all(fixture.root.join("_assets")).expect("create shared assets");
+    fs::write(fixture.root.join("_assets/diagram.png"), "asset v1\n").expect("write asset");
+
+    let first = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run(&fixture, &first);
+    fs::write(fixture.root.join("_assets/diagram.png"), "asset v2\n").expect("update asset");
+
+    let changed = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    assert_eq!(changed["data"]["summary"]["update"], 3);
+    assert_eq!(changed["data"]["summary"]["unchanged"], 0);
+    assert_eq!(changed["data"]["publishable"], 3);
+}
+
+#[test]
+fn publish_staging_maps_shared_assets_and_ignores_siblings() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    fs::create_dir_all(fixture.root.join("_assets")).expect("create shared assets");
+    fs::write(fixture.root.join("_assets/diagram.png"), "asset\n").expect("write asset");
+    fs::write(fixture.root.join("_assets/.env"), "TOKEN=secret\n").expect("write hidden asset");
+    fs::write(fixture.root.join("_assets/private.pem"), "private\n").expect("write key asset");
+    fs::write(
+        fixture.root.join("projects/cuda-agent/perf/side-note.md"),
+        "# Side Note\n",
+    )
+    .expect("write sibling doc");
+
+    let dry_run = run_json(fixture.command().arg("publish").arg("--dry-run"));
+    assert_eq!(dry_run["ok"], true);
+
+    let occupancy_stage = fixture
+        .home
+        .join("typub-stage")
+        .join("projects-cuda-agent-gpu-123456789")
+        .join("posts")
+        .join("projects-cuda-agent-perf-occupancy");
+    assert!(occupancy_stage.join("assets/diagram.png").exists());
+    assert!(!occupancy_stage.join("side-note.md").exists());
+    assert!(!occupancy_stage.join("assets/.env").exists());
+    assert!(!occupancy_stage.join("assets/private.pem").exists());
+}
+
+#[test]
+fn sync_fingerprint_ignores_unpublished_sibling_files() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    fs::write(
+        fixture
+            .root
+            .join("projects/cuda-agent/perf/local-secret.env"),
+        "TOKEN=one\n",
+    )
+    .expect("write sibling secret");
+
+    let first = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run(&fixture, &first);
+    fs::write(
+        fixture
+            .root
+            .join("projects/cuda-agent/perf/local-secret.env"),
+        "TOKEN=two\n",
+    )
+    .expect("update sibling secret");
+
+    let changed = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    assert_eq!(changed["data"]["summary"]["update"], 0);
+    assert_eq!(changed["data"]["summary"]["unchanged"], 3);
+    assert_eq!(changed["data"]["publishable"], 0);
+}
+
+#[test]
+fn plan_rejects_slug_collisions() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    fs::write(
+        fixture.root.join("projects/cuda-agent/a-b.md"),
+        "# A Dash B\n",
+    )
+    .expect("write first collision doc");
+    fs::create_dir_all(fixture.root.join("projects/cuda-agent/a")).expect("create collision dir");
+    fs::write(
+        fixture.root.join("projects/cuda-agent/a/b.md"),
+        "# Nested B\n",
+    )
+    .expect("write second collision doc");
+
+    let value = run_failure_json(fixture.command().arg("plan"));
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["code"], "SLUG_COLLISION");
+}
+
+#[test]
+fn sync_rejects_state_for_different_target_identity() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let first = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run(&fixture, &first);
+    let state_path = sync_state_path(&fixture);
+    let text = fs::read_to_string(&state_path).expect("read state");
+    let mut state: Value = serde_json::from_str(&text).expect("parse state");
+    state["identity"]["space"] = json!("OTHER");
+    fs::write(
+        &state_path,
+        serde_json::to_string_pretty(&state).expect("encode state"),
+    )
+    .expect("write mismatched state");
+
+    let value = run_failure_json(fixture.command().arg("sync").arg("--dry-run"));
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["code"], "STATE_TARGET_MISMATCH");
+}
+
+#[test]
+fn sync_rejects_v1_sync_state_without_legacy_migration() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let first = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run(&fixture, &first);
+    let state_path = sync_state_path(&fixture);
+    let text = fs::read_to_string(&state_path).expect("read state");
+    let mut state: Value = serde_json::from_str(&text).expect("parse state");
+    state["version"] = json!(1);
+    fs::write(
+        &state_path,
+        serde_json::to_string_pretty(&state).expect("encode state"),
+    )
+    .expect("write v1 state");
+
+    let value = run_failure_json(fixture.command().arg("sync").arg("--dry-run"));
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["code"], "STATE_VERSION_UNSUPPORTED");
+}
+
+fn configure(fixture: &Fixture) {
+    configure_with_base_url(fixture, "https://example.atlassian.net/wiki");
+}
+
+fn configure_with_base_url(fixture: &Fixture, base_url: &str) {
+    run_json(
+        fixture
+            .command()
+            .arg("root")
+            .arg(&fixture.root)
+            .arg("--base-url")
+            .arg(base_url),
+    );
+    run_json(
+        fixture
+            .command()
+            .arg("bind")
+            .arg("projects/cuda-agent")
+            .arg("--space")
+            .arg("GPU")
+            .arg("--parent")
+            .arg("123456789"),
+    );
+}
+
+fn write_sync_state_from_dry_run(fixture: &Fixture, sync: &Value) {
+    write_sync_state_from_dry_run_with_base_url(fixture, sync, "https://example.atlassian.net");
+}
+
+fn write_sync_state_from_dry_run_with_base_url(fixture: &Fixture, sync: &Value, base_url: &str) {
+    let mut documents = serde_json::Map::new();
+    for item in sync["data"]["items"].as_array().expect("items array") {
+        let path = item["path"].as_str().expect("path string");
+        documents.insert(
+            path.to_string(),
+            json!({
+                "fingerprint": item["fingerprint"],
+                "title": item["title"],
+                "slug": item["slug"],
+                "parent_path": item["parent_path"],
+                "synced_at": 1,
+            }),
+        );
+    }
+
+    let state_path = sync_state_path(fixture);
+    fs::create_dir_all(state_path.parent().expect("state parent")).expect("create state parent");
+    fs::write(
+        state_path,
+        serde_json::to_string_pretty(&json!({
+            "version": SYNC_STATE_VERSION,
+            "identity": {
+                "root": fixture.root.display().to_string(),
+                "source": "projects/cuda-agent",
+                "base_url": base_url.trim_end_matches('/').trim_end_matches("/wiki"),
+                "space": "GPU",
+                "parent_id": "123456789",
+            },
+            "documents": documents,
+        }))
+        .expect("encode state"),
+    )
+    .expect("write state");
+}
+
+fn seed_typub_platform_status(fixture: &Fixture, sync: &Value, path: &str, platform_id: &str) {
+    let item = sync["data"]["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|item| item["path"] == path)
+        .expect("sync item");
+    let title = item["title"].as_str().expect("title string");
+    let slug = item["slug"].as_str().expect("slug string");
+    let stage_root = stage_root(fixture);
+    let content = staged_status_content(&stage_root, slug, title);
+    let result = PublishResult {
+        url: Some(format!(
+            "https://example.atlassian.net/wiki/spaces/GPU/pages/{platform_id}/{title}"
+        )),
+        platform_id: Some(platform_id.to_string()),
+        published_at: Utc::now(),
+    };
+
+    with_stage_workdir(&stage_root, || {
+        let mut status = StatusTracker::load(&stage_root).expect("load typub status");
+        status
+            .mark_published(&content, "confluence", &result, Some("published"))
+            .expect("mark published");
+    });
+}
+
+fn staged_status_content(stage_root: &Path, slug: &str, title: &str) -> Content {
+    let post_dir = stage_root.join("posts").join(slug);
+    fs::create_dir_all(&post_dir).expect("create status post dir");
+    let content_file = post_dir.join("content.md");
+    fs::write(&content_file, format!("# {title}\n")).expect("write status content");
+
+    Content {
+        path: post_dir,
+        meta: ContentMeta {
+            title: title.to_string(),
+            created: NaiveDate::from_ymd_opt(2026, 6, 18).expect("date"),
+            updated: None,
+            tags: Vec::new(),
+            categories: Vec::new(),
+            published: Some(true),
+            theme: None,
+            internal_link_target: None,
+            preamble: None,
+            platforms: HashMap::new(),
+        },
+        content_file,
+        source_format: ContentFormat::Markdown,
+        slides_file: None,
+        assets: Vec::new(),
+    }
+}
+
+fn with_stage_workdir(stage_root: &Path, op: impl FnOnce()) {
+    let lock = CWD_LOCK.get_or_init(|| Mutex::new(()));
+    let _lock = lock.lock().expect("cwd lock");
+    fs::create_dir_all(stage_root).expect("create stage root");
+    let previous = env::current_dir().expect("current dir");
+    env::set_current_dir(stage_root).expect("enter stage root");
+    op();
+    env::set_current_dir(previous).expect("restore current dir");
+}
+
+fn start_archive_server() -> (String, mpsc::Receiver<String>) {
+    start_archive_server_with_response("202 Accepted", r#"{"id":"task-1"}"#)
+}
+
+fn start_archive_server_with_response(
+    status: &str,
+    body: &str,
+) -> (String, mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let addr = listener.local_addr().expect("server addr");
+    let (tx, rx) = mpsc::channel();
+    let status = status.to_string();
+    let body = body.to_string();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept request");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set timeout");
+        let mut buffer = [0_u8; 4096];
+        let mut bytes = Vec::new();
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => {
+                    bytes.extend_from_slice(&buffer[..read]);
+                    if read < buffer.len() {
+                        break;
+                    }
+                }
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        || err.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    break;
+                }
+                Err(err) => panic!("read request: {err}"),
+            }
+        }
+        let request = String::from_utf8_lossy(&bytes).to_string();
+        tx.send(request).expect("send request");
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write response");
+    });
+    (format!("http://{addr}"), rx)
+}
+
+fn sync_state_path(fixture: &Fixture) -> PathBuf {
+    stage_root(fixture).join("sync-state.json")
+}
+
+fn stage_root(fixture: &Fixture) -> PathBuf {
+    fixture
+        .home
+        .join("typub-stage")
+        .join("projects-cuda-agent-gpu-123456789")
+}
+
+fn plan_item<'a>(plan: &'a Value, path: &str) -> &'a Value {
+    plan["data"]["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|item| item["path"] == path)
+        .expect("plan item")
+}
+
+fn run_json(cmd: &mut Command) -> Value {
+    let assert = cmd.assert().success();
+    parse_stdout(assert.get_output().stdout.as_slice())
+}
+
+fn run_failure_json(cmd: &mut Command) -> Value {
+    let assert = cmd.assert().failure();
+    parse_stdout(assert.get_output().stdout.as_slice())
+}
+
+fn parse_stdout(stdout: &[u8]) -> Value {
+    let text = std::str::from_utf8(stdout).expect("stdout utf8");
+    serde_json::from_str(text).expect("parse JSON")
+}

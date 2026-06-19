@@ -1,0 +1,15 @@
+/target/
+
+# Local secrets and machine-specific environment.
+.env
+.env.*
+!.env.example
+
+# Local editor/OS noise.
+.DS_Store
+*.swp
+*.swo
+
+# Temporary files sometimes produced by Cargo/editors.
+Cargo.toml.orig
+*.rs.bk

@@ -1,0 +1,155 @@
+# conpub
+
+`conpub` is an agent-first CLI for publishing local knowledge files to Confluence Cloud.
+
+The local filesystem is the source of truth. Confluence is the viewing and sharing surface.
+
+## Commands
+
+All commands emit JSON by default. Use `--pretty` to format JSON for humans.
+
+```bash
+conpub root ~/nv-kb --base-url https://example.atlassian.net
+conpub bind projects/cuda-agent --space GPU --parent 123456789
+
+# Or use CONPUB_* defaults from the shell environment:
+conpub root
+conpub bind projects/cuda-agent
+
+conpub resolve
+conpub index
+conpub search "warp occupancy"
+conpub read projects/cuda-agent/perf/occupancy.md:80
+conpub plan
+conpub publish --dry-run
+conpub publish --yes
+conpub sync --dry-run
+conpub sync --yes
+conpub sync --dry-run perf/occupancy.md
+conpub sync --yes perf/occupancy.md docs/
+conpub sync --dry-run --archive-deleted
+conpub sync --yes --archive-deleted
+conpub status
+```
+
+`publish --dry-run` stages the local publish set and returns the documents that would be published without calling Confluence.
+
+`publish --yes` performs Confluence writes through the public `typub` crates from crates.io.
+
+`sync --dry-run` compares the current local documents with `conpub`'s local publish state and reports `create`, `update`, `unchanged`, and `deleted` classifications without calling Confluence.
+
+`sync --yes` publishes only `create` and `update` documents, then records successful publishes in the local sync state. It does not read from Confluence and does not delete remote pages for locally deleted files.
+
+`sync` accepts optional file or directory paths relative to the bound source or configured root. In subset mode it reports only selected documents and does not report global `deleted` entries.
+
+`index` writes a persistent local search index. `search` uses the index only when it is fresh for the current source and document fingerprints; otherwise it falls back to scanning local files.
+
+## Page hierarchy
+
+Root-level documents in the bound source are published directly under the configured Confluence parent page.
+
+For non-root directories, add `_index.md` or `index.md`. That index document becomes the Confluence parent page for documents in the directory. Nested directories must also have index documents for every ancestor directory.
+
+Example:
+
+```text
+projects/cuda-agent/
+  notes.md
+  perf/
+    _index.md
+    occupancy.md
+    memory/
+      _index.md
+      bandwidth.md
+```
+
+`notes.md` publishes under the configured parent. `perf/_index.md` also publishes under the configured parent, `perf/occupancy.md` publishes under `perf/_index.md`, and `perf/memory/bandwidth.md` publishes under `perf/memory/_index.md`.
+
+`publish` and `sync` publish parent index pages before child pages. If you run `sync perf/occupancy.md`, `conpub` includes `perf/_index.md` automatically so the child page has a local parent in the same plan.
+
+`publish` and `sync` run serially by default. Use `--delay-ms <n>` to pause between Confluence publish calls. `--concurrency` is present for forward compatibility, but values above `1` are rejected until typub publish state can be safely shared across concurrent writes.
+
+Shared publish assets live under the configured KB root:
+
+```text
+<root>/_assets/
+```
+
+Reference these files from Markdown or Typst as `assets/<name>`, for example `![Diagram](assets/diagram.png)` or `#image("assets/diagram.png")`. During staging, `conpub` maps the root `_assets` directory into each typub post's `assets/` directory. `conpub` stages only safe asset extensions such as images and PDFs, and skips dotfiles and common key or credential filenames.
+
+Sync fingerprints include the document and the safe shared `_assets` set. Changing `_assets` can mark documents as changed because `conpub` intentionally leaves exact reference parsing to typub. Other Markdown and Typst files are treated as separate documents, not assets. `conpub` rejects slug collisions before planning, syncing, or publishing.
+
+The local sync state is written under a per-binding file lock with atomic replacement and is bound to the configured root, source, base URL, space, and parent page. It stores only local KB metadata such as fingerprints, titles, slugs, parent paths, and sync timestamps.
+
+Remote Confluence IDs, URLs, and publish status are owned by typub's status database under the generated stage root:
+
+```text
+<stage-root>/.typub/status.db
+```
+
+For a real Confluence smoke test, bind a disposable source directory to a disposable parent page and run `conpub sync --yes <smoke-file>`. `conpub` intentionally has no default remote delete/archive behavior; deleted local files are reported as `deleted` so humans or a later explicit prune command can decide what to archive remotely.
+
+Use `sync --archive-deleted --yes` to archive deleted pages whose Confluence page IDs are already known in typub status. This calls Confluence Cloud's `POST /wiki/rest/api/content/archive` endpoint and removes accepted archived entries from local sync state. It does not search Confluence for pages to archive.
+
+Confluence credentials are read by the typub Confluence adapter from:
+
+```text
+CONFLUENCE_EMAIL
+CONFLUENCE_API_KEY
+```
+
+The `--base-url` value may include `/wiki`; `conpub` normalizes it before passing it to typub.
+
+## Configuration
+
+User configuration is stored at:
+
+```text
+~/.config/conpub/conpub.toml
+```
+
+Set `CONPUB_HOME` to override this location, primarily for tests and isolated agent runs.
+
+These environment variables are used as fallbacks when the matching config value or CLI flag is missing:
+
+```text
+CONPUB_KB_ROOT
+CONPUB_BASE_URL
+CONPUB_SPACE
+CONPUB_PARENT_ID
+```
+
+Config files and explicit CLI flags take precedence over these environment variables. `CONPUB_KB_ROOT` can also be used without a user config file, so a project can be bound or resolved in a temporary agent environment after sourcing a shared `.env`.
+
+Project binding is stored in the current project as:
+
+```text
+.conpub.toml
+```
+
+The effective source directory is:
+
+```text
+<user root>/<project source>
+```
+
+## Information Boundaries
+
+Default JSON output is agent-friendly, not share-ready. It can include local paths such as `root`, `source_abs`, `stage_root`, `state_file`, config paths, and Confluence target IDs. Redact or summarize raw JSON before pasting it into shared pages or chats.
+
+`index` stores a persistent local search index under the generated stage root. The index includes full document lines so `search` can return local context quickly. Do not commit or share generated stage roots, search indexes, sync state, typub status databases, or `.env` files.
+
+Precise title extraction for Typst and Markdown uses the `typst` CLI. When `typst` is unavailable or title evaluation fails, `conpub` falls back to the filename-derived title.
+
+## Release Builds
+
+GitHub Actions builds release artifacts with `cargo-zigbuild` for:
+
+- `x86_64-unknown-linux-musl`
+- `aarch64-unknown-linux-musl`
+- `x86_64-apple-darwin`
+- `aarch64-apple-darwin`
+- `x86_64-pc-windows-gnu`
+
+Tag pushes matching `v*` create a GitHub Release with bare binaries,
+per-target archives, and `.sha256` checksums.
