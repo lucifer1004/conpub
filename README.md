@@ -79,7 +79,7 @@ Reference these files from Markdown or Typst as `assets/<name>`, for example `![
 
 Sync fingerprints include the document and the safe shared `_assets` set. Changing `_assets` can mark documents as changed because `conpub` intentionally leaves exact reference parsing to typub. Other Markdown and Typst files are treated as separate documents, not assets. `conpub` rejects slug collisions before planning, syncing, or publishing.
 
-The local sync state is written under a per-binding file lock with atomic replacement and is bound to the configured root, source, base URL, space, and parent page. It stores only local KB metadata such as fingerprints, titles, slugs, parent paths, and sync timestamps.
+The local sync state is written under a per-target file lock with atomic replacement and is bound to the configured root, base URL, space, and parent page. Multiple project bindings that share the same root and Confluence target share this state. The bound source only limits the current scan and deleted-file detection scope. The state stores only local KB metadata such as fingerprints, titles, slugs, parent paths, and sync timestamps.
 
 Remote Confluence IDs, URLs, and publish status are owned by typub's status database under the generated stage root:
 

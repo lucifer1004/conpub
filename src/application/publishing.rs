@@ -106,7 +106,12 @@ pub(crate) fn cmd_sync(
         Some(lock_sync_state(&prepared.stage_root)?)
     };
     let mut state = load_sync_state(&prepared.state_path, &prepared.identity)?;
-    let (mut items, publish_snapshots) = build_sync_plan(&prepared.snapshots, &state, !subset);
+    let (mut items, publish_snapshots) = build_sync_plan(
+        &prepared.snapshots,
+        &state,
+        !subset,
+        &prepared.resolved.source,
+    );
     join_sync_items_with_typub_status(&prepared.stage_root, &mut items)?;
     apply_archive_deleted_plan(&mut items, archive_deleted);
 

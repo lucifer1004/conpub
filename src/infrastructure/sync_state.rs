@@ -62,7 +62,7 @@ pub(crate) fn lock_sync_state(stage_root: &Path) -> AppResult<SyncStateLock> {
 pub(crate) fn sync_state_identity(resolved: &ResolvedConfig) -> SyncStateIdentity {
     SyncStateIdentity {
         root: resolved.root.clone(),
-        source: resolved.source.clone(),
+        source: ".".to_string(),
         base_url: resolved
             .target
             .base_url

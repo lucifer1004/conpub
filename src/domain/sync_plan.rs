@@ -7,6 +7,7 @@ pub(crate) fn build_sync_plan(
     snapshots: &[DocumentSnapshot],
     state: &SyncState,
     include_deleted: bool,
+    source: &str,
 ) -> (Vec<SyncItemResult>, Vec<DocumentSnapshot>) {
     let mut items = Vec::new();
     let mut publish_snapshots = Vec::new();
@@ -61,7 +62,7 @@ pub(crate) fn build_sync_plan(
         let mut deleted = state
             .documents
             .iter()
-            .filter(|(path, _)| !current_paths.contains(*path))
+            .filter(|(path, _)| !current_paths.contains(*path) && path_is_in_source(path, source))
             .map(|(path, entry)| SyncItemResult {
                 path: path.clone(),
                 title: entry.title.clone(),
@@ -84,6 +85,17 @@ pub(crate) fn build_sync_plan(
     }
 
     (items, publish_snapshots)
+}
+
+fn path_is_in_source(path: &str, source: &str) -> bool {
+    if source.is_empty() || source == "." {
+        return true;
+    }
+
+    path == source
+        || path
+            .strip_prefix(source)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 pub(crate) fn merge_publish_results_into_sync_items(

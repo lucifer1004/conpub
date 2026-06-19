@@ -53,6 +53,8 @@ that boundary.
   knowledge-source fallback.
 - `sync` state is local metadata only. Remote Confluence IDs, URLs, and publish
   status belong to typub status under the generated stage root.
+- Sync state and typub status are scoped by KB root and Confluence target, not
+  by project source. Source bindings limit scans and deleted-file detection.
 
 ## Configuration And Secrets
 

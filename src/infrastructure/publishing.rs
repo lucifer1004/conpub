@@ -335,9 +335,6 @@ pub(crate) fn content_meta_for(
 }
 
 pub(crate) fn publish_stage_root(resolved: &ResolvedConfig) -> AppResult<PathBuf> {
-    let key = format!(
-        "{}-{}-{}",
-        resolved.source, resolved.target.space, resolved.target.parent_id
-    );
+    let key = format!("{}-{}", resolved.target.space, resolved.target.parent_id);
     Ok(conpub_home()?.join("typub-stage").join(sanitize_slug(&key)))
 }

@@ -32,11 +32,19 @@ pub(crate) fn join_sync_items_with_typub_status(
     };
 
     for item in items {
+        let mut has_remote_status = false;
         if let Some(platform_id) = get_platform_id(&status, &item.slug)? {
             item.platform_id = Some(platform_id);
+            has_remote_status = true;
         }
         if let Some(url) = get_published_url(&status, &item.slug)? {
             item.url = Some(url);
+            has_remote_status = true;
+        }
+        if item.action == "create" && has_remote_status {
+            item.action = "update".to_string();
+            item.reason =
+                Some("present in typub status but missing from local publish state".to_string());
         }
     }
 
@@ -196,6 +204,45 @@ mod tests {
         assert_eq!(
             items[0].url.as_deref(),
             Some("https://example.atlassian.net/wiki/spaces/GPU/pages/42/Notes")
+        );
+    }
+
+    #[test]
+    fn join_sync_items_reclassifies_known_remote_create_as_update() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let stage_root = temp.path().join("stage");
+        let slug = "projects-cuda-agent-notes";
+        seed_typub_status(
+            &stage_root,
+            slug,
+            "https://example.atlassian.net/wiki/spaces/GPU/pages/42/Notes",
+            "42",
+        );
+
+        let mut items = vec![SyncItemResult {
+            path: "projects/cuda-agent/notes.typ".to_string(),
+            title: "Notes".to_string(),
+            slug: slug.to_string(),
+            parent_path: None,
+            parent_id: None,
+            action: "create".to_string(),
+            status: "pending".to_string(),
+            fingerprint: Some("new".to_string()),
+            previous_fingerprint: None,
+            url: None,
+            platform_id: None,
+            archive_task_id: None,
+            error: None,
+            reason: Some("not present in local publish state".to_string()),
+        }];
+
+        join_sync_items_with_typub_status(&stage_root, &mut items).expect("join status");
+
+        assert_eq!(items[0].action, "update");
+        assert_eq!(items[0].platform_id.as_deref(), Some("42"));
+        assert_eq!(
+            items[0].reason.as_deref(),
+            Some("present in typub status but missing from local publish state")
         );
     }
 

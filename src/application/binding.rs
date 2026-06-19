@@ -119,7 +119,7 @@ pub(crate) fn cmd_status() -> AppResult<serde_json::Value> {
         let identity = sync_state_identity(config);
         let state_path = sync_state_path(&stage_root);
         let state = load_sync_state(&state_path, &identity)?;
-        let (items, publish_snapshots) = build_sync_plan(&snapshots, &state, true);
+        let (items, publish_snapshots) = build_sync_plan(&snapshots, &state, true, &config.source);
 
         (
             documents.len(),

@@ -433,6 +433,37 @@ fn sync_uses_state_to_skip_unchanged_and_detect_update_and_deleted() {
 }
 
 #[test]
+fn sync_state_is_shared_across_source_bindings_for_same_root_and_target() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let first = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run(&fixture, &first);
+
+    run_json(
+        fixture
+            .command()
+            .arg("bind")
+            .arg("projects/cuda-agent/perf")
+            .arg("--space")
+            .arg("GPU")
+            .arg("--parent")
+            .arg("123456789"),
+    );
+
+    let narrowed = run_json(fixture.command().arg("sync").arg("--dry-run"));
+
+    assert_eq!(narrowed["ok"], true);
+    assert_eq!(narrowed["data"]["stage_root"], first["data"]["stage_root"]);
+    assert_eq!(narrowed["data"]["count"], 2);
+    assert_eq!(narrowed["data"]["publishable"], 1);
+    assert_eq!(narrowed["data"]["summary"]["create"], 0);
+    assert_eq!(narrowed["data"]["summary"]["deleted"], 0);
+    assert_eq!(narrowed["data"]["summary"]["update"], 1);
+    assert_eq!(narrowed["data"]["summary"]["unchanged"], 1);
+}
+
+#[test]
 fn sync_path_subset_limits_plan_and_omits_global_deleted_entries() {
     let fixture = Fixture::new();
     configure(&fixture);
@@ -657,10 +688,7 @@ fn publish_staging_maps_shared_assets_and_ignores_siblings() {
     let dry_run = run_json(fixture.command().arg("publish").arg("--dry-run"));
     assert_eq!(dry_run["ok"], true);
 
-    let occupancy_stage = fixture
-        .home
-        .join("typub-stage")
-        .join("projects-cuda-agent-gpu-123456789")
+    let occupancy_stage = stage_root(&fixture)
         .join("posts")
         .join("projects-cuda-agent-perf-occupancy");
     assert!(occupancy_stage.join("assets/diagram.png").exists());
@@ -815,7 +843,7 @@ fn write_sync_state_from_dry_run_with_base_url(fixture: &Fixture, sync: &Value, 
             "version": SYNC_STATE_VERSION,
             "identity": {
                 "root": fixture.root.display().to_string(),
-                "source": "projects/cuda-agent",
+                "source": ".",
                 "base_url": base_url.trim_end_matches('/').trim_end_matches("/wiki"),
                 "space": "GPU",
                 "parent_id": "123456789",
@@ -948,10 +976,7 @@ fn sync_state_path(fixture: &Fixture) -> PathBuf {
 }
 
 fn stage_root(fixture: &Fixture) -> PathBuf {
-    fixture
-        .home
-        .join("typub-stage")
-        .join("projects-cuda-agent-gpu-123456789")
+    fixture.home.join("typub-stage").join("gpu-123456789")
 }
 
 fn plan_item<'a>(plan: &'a Value, path: &str) -> &'a Value {

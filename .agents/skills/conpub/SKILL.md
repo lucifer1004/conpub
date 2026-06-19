@@ -173,6 +173,10 @@ The index stores full document lines. Do not commit or share generated stage
 roots, search indexes, sync state, typub status DBs, `.env` files, or
 credentials.
 
+Sync state and typub status are shared by KB root and Confluence target across
+project source bindings. A bound source limits the current scan and deleted-file
+detection; it does not create a separate publish state.
+
 Precise title extraction uses the `typst` CLI. If `typst` is unavailable or
 evaluation fails, conpub falls back to a filename-derived title.
 
