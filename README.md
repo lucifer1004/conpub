@@ -12,6 +12,12 @@ All commands emit JSON by default. Use `--pretty` to format JSON for humans.
 conpub root ~/nv-kb --base-url https://example.atlassian.net
 conpub bind projects/cuda-agent --space GPU --parent 123456789
 
+# Install or manage the conpub Agent Skill plugin:
+conpub agent doctor
+conpub agent install all --from-checkout <checkout-or-unpacked-plugin-archive>
+conpub agent update all
+conpub agent uninstall all
+
 # Or use CONPUB_* defaults from the shell environment:
 conpub root
 conpub bind projects/cuda-agent
@@ -35,6 +41,25 @@ conpub prune --yes --archive
 conpub prune --yes --delete
 conpub status
 ```
+
+## Agent plugin
+
+conpub ships one operator Agent Skill for Codex and Claude. Install the conpub binary first, then use either a source checkout or the matching release's unpacked `conpub-plugin.tar.gz`:
+
+```bash
+conpub agent doctor
+conpub agent install codex --from-checkout .
+conpub agent install claude --from-checkout .
+```
+
+Use `all` instead of a runtime name to operate on both. The lifecycle commands delegate to each runtime's native plugin manager and emit JSON like every other conpub command:
+
+```bash
+conpub agent update all
+conpub agent uninstall all
+```
+
+The plugin installs only the Agent Skill; it does not install the conpub binary or configure Confluence credentials. Start a new agent thread after installing or updating so the runtime loads the new skill version.
 
 `publish --dry-run` stages the local publish set and returns the documents that would be published without calling Confluence.
 
@@ -103,6 +128,35 @@ For a real Confluence smoke test, bind a disposable source directory to a dispos
 
 Use `sync --archive-deleted --yes` to archive deleted pages whose Confluence page IDs are already known in typub status. This calls Confluence Cloud's `POST /wiki/rest/api/content/archive` endpoint and removes accepted archived entries from local sync state. It does not search Confluence for pages to archive.
 
+## Authentication
+
+`CONFLUENCE_API_KEY` is the historical configuration name for an Atlassian **personal API token**. It is not an Atlassian organization API key.
+
+To create a compatible token:
+
+1. Open Atlassian's [API token page](https://id.atlassian.com/manage-profile/security/api-tokens) and sign in with the account that will publish pages. Atlassian's [token management guide](https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/) covers the available token types and organization-policy restrictions.
+2. Create an API token **without scopes**, choose a purpose-specific name and expiration date, and copy the token when it is shown. Atlassian does not show it again.
+3. Ensure that the account can view the configured parent page and create and edit pages in the target space. Publishing images or files additionally requires the space's **Add attachments** permission. Archive and permanent-delete commands require the corresponding Confluence permissions.
+4. Set the account email as `CONFLUENCE_EMAIL` and the token as `CONFLUENCE_API_KEY`.
+
+conpub currently authenticates with email/token Basic Auth against the site's `https://<site>.atlassian.net/wiki` URL. Scoped API tokens use Atlassian's `https://api.atlassian.com/ex/confluence/{cloudId}` endpoint and are not supported by this authentication path. Atlassian organization API keys and service-account Bearer tokens are not compatible either.
+
+Do not paste a token into chat, an issue, a committed project file, or a shell command that will be retained in history.
+
+When you will run conpub in the same interactive shell, enter the token without echo:
+
+```bash
+export CONFLUENCE_EMAIL='you@example.com'
+read -rsp 'Atlassian API token: ' CONFLUENCE_API_KEY
+printf '\n'
+export CONFLUENCE_API_KEY
+```
+
+Those exports apply only to that shell; they do not propagate into a separately launched agent command. When an agent will run conpub, prepare one of these local credential sources yourself and tell the agent only which source to use:
+
+- Put `[confluence]` credentials in `~/.config/conpub/conpub.toml`, then run `chmod 600 ~/.config/conpub/conpub.toml`. conpub loads this file directly for every project.
+- Put the environment variables in a git-ignored file with mode `600`. The agent must source that file in the same command process that runs conpub and must never print its contents.
+
 Confluence credentials resolve per field with this precedence:
 
 ```text
@@ -111,11 +165,15 @@ CONFLUENCE_API_KEY / CONFLUENCE_EMAIL      (environment, wins)
 [confluence] api_key / email in ~/.config/conpub/conpub.toml   (user)
 ```
 
+Config-file credentials are stored as plaintext. Never place credentials in a project `.conpub.toml` that may be committed. The following example is intended for the mode-`600` user configuration at `~/.config/conpub/conpub.toml`:
+
 ```toml
 [confluence]
 api_key = "<atlassian-api-token>"
 email = "you@example.com"
 ```
+
+Environment variables remain useful for ephemeral or secret-manager-backed sessions. Project-level credentials are supported for compatibility but are not recommended.
 
 Resolved credentials travel only inside the in-memory typub platform config; they are never written to the stage, and never appear in `resolve`, `plan`, `status`, or `bind` output. Re-running `conpub bind` or `conpub root` preserves an existing `[confluence]` section.
 
@@ -173,4 +231,5 @@ GitHub Actions builds release artifacts with `cargo-zigbuild` for:
 - `x86_64-pc-windows-gnu`
 
 Tag pushes matching `v*` create a GitHub Release with bare binaries,
-per-target archives, and `.sha256` checksums.
+per-target archives, and `.sha256` checksums. Releases also include a
+version-matched `conpub-plugin.tar.gz` with its checksum for Codex and Claude.

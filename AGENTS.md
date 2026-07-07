@@ -22,8 +22,10 @@ development guide focused on repository work.
   crates.io package whitelist.
 - `.github/workflows/ci.yml` and `.github/workflows/release.yml` before
   changing validation, packaging, or release behavior.
-- `.agents/skills/conpub/SKILL.md` before changing the user-facing conpub
+- `plugins/conpub/skills/conpub/SKILL.md` before changing the user-facing conpub
   skill.
+- `scripts/check-plugin-package.py` before changing plugin manifests or moving
+  skill files.
 
 ## Project Shape
 
@@ -91,6 +93,8 @@ cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test --locked
 cargo publish --dry-run --allow-dirty --locked
+python3 scripts/check-plugin-package.py .
+scripts/pack-plugin.sh /tmp/conpub-plugin.tar.gz
 ```
 
 For release-path validation, exercise at least one zigbuild target when the

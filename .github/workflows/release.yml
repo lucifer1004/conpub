@@ -78,10 +78,30 @@ jobs:
             ${{ matrix.asset }}.sha256
             conpub-${{ github.ref_name }}-${{ matrix.target }}.*
 
+  plugin:
+    name: plugin archive
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Pack + checksum
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            python3 scripts/check-plugin-package.py . "${GITHUB_REF_NAME#v}"
+          fi
+          scripts/pack-plugin.sh conpub-plugin.tar.gz
+          sha256sum conpub-plugin.tar.gz > conpub-plugin.tar.gz.sha256
+      - uses: actions/upload-artifact@v7
+        with:
+          name: conpub-plugin
+          path: |
+            conpub-plugin.tar.gz
+            conpub-plugin.tar.gz.sha256
+
   release:
     name: publish GitHub release
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [build, plugin]
     permissions:
       contents: write
     steps:
@@ -102,6 +122,10 @@ jobs:
             Prebuilt `conpub` binaries and `.sha256` checksums are attached
             for Linux x86_64/aarch64 musl, macOS x86_64/aarch64, and Windows
             x86_64 GNU.
+
+            `conpub-plugin.tar.gz` contains the version-matched Codex and
+            Claude Agent Skill plugin package. Verify its checksum, unpack it,
+            then run `conpub agent install all --from-checkout <directory>`.
 
             macOS binaries are unsigned. On first run, right-click the
             downloaded file and select Open to bypass Gatekeeper, or run:

@@ -1,0 +1,4 @@
+interface:
+  display_name: "conpub"
+  short_description: "Publish local knowledge files to Confluence Cloud."
+  default_prompt: "Use $conpub to configure credentials safely, query local knowledge, preview changes, and publish to Confluence."

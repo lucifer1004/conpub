@@ -1,6 +1,6 @@
 [package]
 name = "conpub"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 rust-version = "1.96"
 description = "Agent-first CLI for publishing local knowledge files to Confluence Cloud"
@@ -20,6 +20,7 @@ include = [
 ]
 
 [dependencies]
+agent-plugin-installer = { version = "0.6", features = ["clap"] }
 blake3 = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }

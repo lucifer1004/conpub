@@ -1,6 +1,6 @@
 ---
 name: conpub
-description: Use conpub to help users publish, sync, preview, search, and read local Markdown/Typst knowledge files through Confluence Cloud. Use when a user asks to configure a local knowledge base, bind a project to a Confluence space/parent page, inspect local KB content, build page hierarchy, run dry-run publish/sync, publish or sync with explicit confirmation, include images/assets, or use Confluence as a sharing/result-presentation surface while keeping local files as the source of truth.
+description: Use conpub to help users publish, sync, preview, search, and read local Markdown/Typst knowledge files through Confluence Cloud. Use when a user asks to configure a local knowledge base or Atlassian credentials, bind a project to a Confluence space/parent page, inspect local KB content, build page hierarchy, run dry-run publish/sync, publish or sync with explicit confirmation, include images/assets, or use Confluence as a sharing/result-presentation surface while keeping local files as the source of truth.
 ---
 
 # conpub
@@ -22,7 +22,11 @@ only the viewing and sharing surface.
   Confluence writes.
 - Use `sync --archive-deleted --yes` only when the user explicitly wants known
   deleted pages archived remotely.
-- Do not print or persist credentials.
+- Never ask the user to paste an API token into chat. Ask them to configure it
+  locally and report only whether it is present.
+- Do not print, read back, log, or persist credentials. Persist a credential
+  only when the user explicitly requests it and the destination is private,
+  access-restricted, and excluded from version control.
 
 ## Configuration
 
@@ -42,7 +46,94 @@ CONFLUENCE_EMAIL
 CONFLUENCE_API_KEY
 ```
 
+Despite its name, `CONFLUENCE_API_KEY` must contain an Atlassian personal API
+token, not an Atlassian organization API key.
+
 Use `CONPUB_HOME` only for isolated tests or temporary agent runs.
+
+## First-Run Intake
+
+Run `conpub resolve` first. Reuse valid existing configuration and ask only for
+values that are missing or that the user wants to change. Never make the user
+re-enter values available from the environment or conpub configuration. Ask for
+all missing non-secret values in one concise message rather than one at a time.
+
+For an unconfigured project, collect the minimum inputs:
+
+1. Ask for the absolute local knowledge-base directory.
+2. Derive the project source as the current directory relative to that root. If
+   it cannot be derived, ask for the source-relative path; use `.` only when the
+   whole root should be bound.
+3. Ask for the Confluence parent-page URL. Prefer this single URL over asking
+   separately for the base URL, space key, and parent page ID.
+4. Ask for the Atlassian account email and whether a personal API token is
+   already configured locally. Never ask for the token value.
+
+Derive configuration from a normal Confluence Cloud page URL such as:
+
+```text
+https://example.atlassian.net/wiki/spaces/GPU/pages/123456789/Page+Title
+```
+
+- Derive the base URL as `https://example.atlassian.net/wiki`.
+- Derive the space key from the segment after `/spaces/`.
+- Derive the parent ID from the digits after `/pages/`. Also accept `pageId`
+  from a `viewpage.action` URL; ask for the space key separately when that URL
+  does not contain it.
+- Preserve a personal-space key's leading `~`. Quote values such as
+  `CONPUB_SPACE='~account-id'` in shell configuration to prevent expansion.
+
+Before writing configuration, summarize the derived non-secret values for the
+user. Do not include credential values in the summary.
+
+## Atlassian API Token
+
+Guide a user without a token to Atlassian's
+[API token page](https://id.atlassian.com/manage-profile/security/api-tokens).
+Use Atlassian's official
+[token management guide](https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/)
+when the UI or organization policy needs explanation:
+
+1. Create a personal API token **without scopes**, give it a purpose-specific
+   name and expiry, and copy it when shown.
+2. Confirm that the token's account can view the parent page and create and edit
+   pages in the target space. For documents with images or files, also confirm
+   the space's **Add attachments** permission.
+3. Ask the user to expose it locally as `CONFLUENCE_API_KEY` and the owning
+   account email as `CONFLUENCE_EMAIL`.
+
+Current conpub authentication uses email/token Basic Auth against the site's
+`*.atlassian.net/wiki` URL. Scoped API tokens require Atlassian's
+`api.atlassian.com/ex/confluence/{cloudId}` endpoint and are not supported.
+Organization API keys and service-account Bearer tokens are also not supported.
+If organization policy prevents creating an unscoped personal token, report the
+compatibility limitation instead of requesting a different secret.
+
+Choose the credential handoff based on who will run conpub.
+
+When the user will run conpub in the same interactive shell, let them enter the
+token without echoing it or placing it in shell history:
+
+```bash
+export CONFLUENCE_EMAIL='you@example.com'
+read -rsp 'Atlassian API token: ' CONFLUENCE_API_KEY
+printf '\n'
+export CONFLUENCE_API_KEY
+```
+
+An export in the user's shell does not propagate into a separate agent command
+process. When the agent will run conpub, ask the user to choose one of these
+local handoffs without revealing the token:
+
+- Put `[confluence]` credentials in `~/.config/conpub/conpub.toml` and restrict
+  it with `chmod 600`. Ask the user to write the values; do not read them back.
+- Prepare a git-ignored, mode-`600` environment file and provide only its path.
+  Source that file in the same command process that runs conpub, without
+  printing its contents.
+
+Treat the user's confirmation that credentials are configured as sufficient
+until the first explicitly authorized Confluence write. Never make a separate
+remote request merely to expose or test the secret.
 
 For first-time setup:
 

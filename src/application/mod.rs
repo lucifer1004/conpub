@@ -1,3 +1,4 @@
+mod agent;
 mod binding;
 mod local_query;
 mod publishing;
@@ -10,8 +11,11 @@ use local_query::{cmd_index, cmd_read, cmd_search};
 use publishing::{cmd_plan, cmd_prune, cmd_publish, cmd_sync};
 use serde_json::json;
 
+use agent::cmd_agent;
+
 pub(crate) fn run(cli: Cli) -> AppResult<serde_json::Value> {
     match cli.command {
+        Command::Agent { command } => cmd_agent(command),
         Command::Root { dir, base_url } => cmd_root(dir, base_url),
         Command::Bind {
             source,

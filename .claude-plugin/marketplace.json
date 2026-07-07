@@ -1,0 +1,15 @@
+{
+  "name": "conpub",
+  "description": "conpub publishes a local Markdown or Typst knowledge base to Confluence Cloud.",
+  "owner": {
+    "name": "Zihua Wu"
+  },
+  "plugins": [
+    {
+      "name": "conpub",
+      "description": "Agent Skill for configuring, querying, previewing, syncing, and publishing with conpub.",
+      "version": "0.1.3",
+      "source": "./plugins/conpub"
+    }
+  ]
+}

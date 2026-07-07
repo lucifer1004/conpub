@@ -105,6 +105,249 @@ fn root_bind_resolve_emit_json() {
     assert_eq!(resolve["data"]["target"]["parent_id"], "123456789");
 }
 
+#[cfg(unix)]
+#[test]
+fn agent_doctor_defaults_to_all_runtimes() {
+    let fixture = Fixture::new();
+    let fake_bin = fixture._tmp.path().join("fake-bin");
+    let log = fixture._tmp.path().join("agent.log");
+    install_fake_agent_clis(&fake_bin, false);
+
+    let value = run_json(
+        fixture
+            .command()
+            .env("PATH", path_with(&fake_bin))
+            .env("AGENT_TEST_LOG", &log)
+            .arg("agent")
+            .arg("doctor"),
+    );
+
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["data"]["operation"], "doctor");
+    assert_eq!(value["data"]["count"], 2);
+    let rows = value["data"]["rows"].as_array().expect("rows array");
+    assert_eq!(rows[0]["agent"], "codex");
+    assert_eq!(rows[0]["status"], "ready");
+    assert_eq!(rows[1]["agent"], "claude");
+    assert_eq!(rows[1]["status"], "ready");
+}
+
+#[test]
+fn agent_install_validates_package_before_native_commands() {
+    let fixture = Fixture::new();
+    let checkout = fixture._tmp.path().join("empty-plugin");
+    fs::create_dir_all(&checkout).expect("create empty plugin checkout");
+
+    let value = run_failure_json(
+        fixture
+            .command()
+            .arg("agent")
+            .arg("install")
+            .arg("all")
+            .arg("--from-checkout")
+            .arg(&checkout),
+    );
+
+    assert_eq!(value["code"], "AGENT_PACKAGE_INVALID");
+    let rows = value["details"]["rows"]
+        .as_array()
+        .expect("error rows array");
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| row["commands"] == json!([])));
+    assert!(
+        rows[0]["message"]
+            .as_str()
+            .expect("message")
+            .contains(".agents/plugins/marketplace.json")
+    );
+}
+
+#[test]
+fn agent_install_rejects_invalid_manifest_before_native_commands() {
+    let fixture = Fixture::new();
+    let checkout = fixture._tmp.path().join("plugin-checkout");
+    write_plugin_package(&checkout);
+    fs::write(
+        checkout.join("plugins/conpub/.codex-plugin/plugin.json"),
+        "not-json\n",
+    )
+    .expect("corrupt Codex manifest");
+
+    let value = run_failure_json(
+        fixture
+            .command()
+            .arg("agent")
+            .arg("install")
+            .arg("codex")
+            .arg("--from-checkout")
+            .arg(&checkout),
+    );
+
+    assert_eq!(value["code"], "AGENT_PACKAGE_INVALID");
+    assert!(
+        value["details"]["rows"][0]["message"]
+            .as_str()
+            .expect("message")
+            .contains("invalid JSON")
+    );
+    assert_eq!(value["details"]["rows"][0]["commands"], json!([]));
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_lifecycle_uses_native_plugin_commands_for_all_runtimes() {
+    let fixture = Fixture::new();
+    let checkout = fixture._tmp.path().join("plugin-checkout");
+    let fake_bin = fixture._tmp.path().join("fake-bin");
+    let log = fixture._tmp.path().join("agent.log");
+    write_plugin_package(&checkout);
+    install_fake_agent_clis(&fake_bin, false);
+
+    let install = run_json(
+        fixture
+            .command()
+            .env("PATH", path_with(&fake_bin))
+            .env("AGENT_TEST_LOG", &log)
+            .arg("agent")
+            .arg("install")
+            .arg("all")
+            .arg("--from-checkout")
+            .arg(&checkout),
+    );
+    assert_eq!(install["data"]["rows"][0]["status"], "installed");
+    assert_eq!(install["data"]["rows"][1]["status"], "installed");
+
+    let update = run_json(
+        fixture
+            .command()
+            .env("PATH", path_with(&fake_bin))
+            .env("AGENT_TEST_LOG", &log)
+            .arg("agent")
+            .arg("update")
+            .arg("all"),
+    );
+    assert_eq!(update["data"]["rows"][0]["status"], "updated");
+    assert_eq!(update["data"]["rows"][1]["status"], "updated");
+
+    let uninstall = run_json(
+        fixture
+            .command()
+            .env("PATH", path_with(&fake_bin))
+            .env("AGENT_TEST_LOG", &log)
+            .arg("agent")
+            .arg("uninstall")
+            .arg("all"),
+    );
+    assert_eq!(uninstall["data"]["rows"][0]["status"], "uninstalled");
+    assert_eq!(uninstall["data"]["rows"][1]["status"], "uninstalled");
+
+    let commands = fs::read_to_string(log).expect("read agent command log");
+    assert!(commands.contains("codex plugin marketplace add"));
+    assert!(commands.contains("codex plugin add conpub@conpub"));
+    assert!(commands.contains("claude plugin marketplace add"));
+    assert!(commands.contains("claude plugin install conpub@conpub"));
+    assert!(commands.contains("plugin marketplace upgrade conpub"));
+    assert!(commands.contains("plugin uninstall conpub"));
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_failure_reports_completed_native_command_prefix() {
+    let fixture = Fixture::new();
+    let checkout = fixture._tmp.path().join("plugin-checkout");
+    let fake_bin = fixture._tmp.path().join("fake-bin");
+    let log = fixture._tmp.path().join("agent.log");
+    write_plugin_package(&checkout);
+    install_fake_agent_clis(&fake_bin, true);
+
+    let value = run_failure_json(
+        fixture
+            .command()
+            .env("PATH", path_with(&fake_bin))
+            .env("AGENT_TEST_LOG", &log)
+            .arg("agent")
+            .arg("install")
+            .arg("codex")
+            .arg("--from-checkout")
+            .arg(&checkout),
+    );
+
+    assert_eq!(value["code"], "AGENT_OPERATION_FAILED");
+    let commands = value["details"]["rows"][0]["commands"]
+        .as_array()
+        .expect("commands array");
+    assert!(commands.iter().any(|command| {
+        command
+            .as_str()
+            .is_some_and(|command| command.contains("plugin marketplace add"))
+    }));
+    assert!(commands.iter().any(|command| {
+        command
+            .as_str()
+            .is_some_and(|command| command.contains("plugin add conpub@conpub"))
+    }));
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_preflight_failure_blocks_all_runtime_mutations() {
+    let fixture = Fixture::new();
+    let fake_bin = fixture._tmp.path().join("fake-bin");
+    let log = fixture._tmp.path().join("agent.log");
+    install_fake_agent_clis(&fake_bin, false);
+    fs::remove_file(fake_bin.join("claude")).expect("remove fake Claude CLI");
+
+    let value = run_failure_json(
+        fixture
+            .command()
+            .env("PATH", &fake_bin)
+            .env("AGENT_TEST_LOG", &log)
+            .arg("agent")
+            .arg("update")
+            .arg("all"),
+    );
+
+    assert_eq!(value["code"], "AGENT_NOT_READY");
+    assert_eq!(value["details"]["rows"][0]["status"], "skipped");
+    assert_eq!(value["details"]["rows"][1]["status"], "missing");
+    let commands = fs::read_to_string(log).expect("read agent command log");
+    assert!(!commands.lines().any(|line| {
+        line == "codex plugin marketplace upgrade conpub"
+            || line == "codex plugin add conpub@conpub"
+    }));
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_mutation_failure_skips_later_runtime() {
+    let fixture = Fixture::new();
+    let checkout = fixture._tmp.path().join("plugin-checkout");
+    let fake_bin = fixture._tmp.path().join("fake-bin");
+    let log = fixture._tmp.path().join("agent.log");
+    write_plugin_package(&checkout);
+    install_fake_agent_clis(&fake_bin, true);
+
+    let value = run_failure_json(
+        fixture
+            .command()
+            .env("PATH", path_with(&fake_bin))
+            .env("AGENT_TEST_LOG", &log)
+            .arg("agent")
+            .arg("install")
+            .arg("all")
+            .arg("--from-checkout")
+            .arg(&checkout),
+    );
+
+    assert_eq!(value["code"], "AGENT_OPERATION_FAILED");
+    assert_eq!(value["details"]["rows"][0]["status"], "failed");
+    assert_eq!(value["details"]["rows"][1]["status"], "skipped");
+    let commands = fs::read_to_string(log).expect("read agent command log");
+    assert!(!commands.lines().any(|line| {
+        line.starts_with("claude plugin marketplace add ") && !line.ends_with("--help")
+    }));
+}
+
 #[test]
 fn root_and_bind_accept_conpub_environment_defaults() {
     let fixture = Fixture::new();
@@ -1384,6 +1627,86 @@ fn plan_item<'a>(plan: &'a Value, path: &str) -> &'a Value {
         .iter()
         .find(|item| item["path"] == path)
         .expect("plan item")
+}
+
+fn write_plugin_package(checkout: &Path) {
+    let version = env!("CARGO_PKG_VERSION");
+    let files = [
+        (
+            ".agents/plugins/marketplace.json",
+            json!({
+                "name": "conpub",
+                "plugins": [{
+                    "name": "conpub",
+                    "source": {"source": "local", "path": "./plugins/conpub"}
+                }]
+            })
+            .to_string(),
+        ),
+        (
+            ".claude-plugin/marketplace.json",
+            json!({
+                "name": "conpub",
+                "plugins": [{
+                    "name": "conpub",
+                    "version": version,
+                    "source": "./plugins/conpub"
+                }]
+            })
+            .to_string(),
+        ),
+        (
+            "plugins/conpub/.codex-plugin/plugin.json",
+            json!({"name": "conpub", "version": version}).to_string(),
+        ),
+        (
+            "plugins/conpub/.claude-plugin/plugin.json",
+            json!({"name": "conpub", "version": version}).to_string(),
+        ),
+        (
+            "plugins/conpub/skills/conpub/SKILL.md",
+            "---\nname: conpub\ndescription: test\n---\n".to_string(),
+        ),
+    ];
+    for (path, contents) in files {
+        let path = checkout.join(path);
+        fs::create_dir_all(path.parent().expect("plugin parent")).expect("create plugin parent");
+        fs::write(path, contents).expect("write plugin file");
+    }
+}
+
+#[cfg(unix)]
+fn install_fake_agent_clis(bin: &Path, fail_codex_install: bool) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::create_dir_all(bin).expect("create fake bin");
+    for cli in ["codex", "claude"] {
+        let path = bin.join(cli);
+        let failure = if cli == "codex" && fail_codex_install {
+            "case \"$*\" in\n  'plugin add conpub@conpub') exit 17 ;;\nesac\n"
+        } else {
+            ""
+        };
+        fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nprintf '%s %s\\n' '{cli}' \"$*\" >> \"$AGENT_TEST_LOG\"\n{failure}exit 0\n"
+            ),
+        )
+        .expect("write fake agent CLI");
+        let mut permissions = fs::metadata(&path)
+            .expect("fake CLI metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).expect("make fake CLI executable");
+    }
+}
+
+#[cfg(unix)]
+fn path_with(bin: &Path) -> std::ffi::OsString {
+    let mut paths = vec![bin.to_path_buf()];
+    paths.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
+    env::join_paths(paths).expect("join PATH")
 }
 
 fn run_json(cmd: &mut Command) -> Value {

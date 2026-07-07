@@ -1,3 +1,4 @@
+mod agent_plugin;
 mod archive;
 mod assets;
 mod config;
@@ -8,6 +9,7 @@ mod sync_state;
 mod title;
 mod typub_status;
 
+pub(crate) use agent_plugin::*;
 pub(crate) use archive::*;
 pub(crate) use assets::*;
 pub(crate) use config::*;

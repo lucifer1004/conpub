@@ -1,3 +1,4 @@
+pub(crate) use agent_plugin_installer::AgentSelector;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -18,6 +19,11 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
+    /// Manage the conpub Agent Skill plugin.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
     /// Set the user-level local knowledge root.
     Root {
         /// Local knowledge-base root directory.
@@ -122,4 +128,35 @@ pub(crate) enum Command {
     },
     /// Show local configuration and publish status summary.
     Status,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum AgentCommand {
+    /// Check whether native agent plugin commands are available.
+    Doctor {
+        /// Agent runtime to inspect.
+        #[arg(value_enum, default_value = "all")]
+        agent: AgentSelector,
+    },
+    /// Install the conpub plugin from a checkout or unpacked plugin archive.
+    Install {
+        /// Agent runtime to install into.
+        #[arg(value_enum)]
+        agent: AgentSelector,
+        /// Repository checkout or unpacked conpub plugin archive.
+        #[arg(long, value_name = "PATH")]
+        from_checkout: PathBuf,
+    },
+    /// Update an installed conpub plugin through its native marketplace.
+    Update {
+        /// Agent runtime to update.
+        #[arg(value_enum)]
+        agent: AgentSelector,
+    },
+    /// Uninstall the conpub plugin through the native agent CLI.
+    Uninstall {
+        /// Agent runtime to uninstall from.
+        #[arg(value_enum)]
+        agent: AgentSelector,
+    },
 }

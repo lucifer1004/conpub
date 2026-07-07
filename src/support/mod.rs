@@ -26,6 +26,7 @@ pub(crate) struct AppError {
     pub(crate) message: String,
     pub(crate) retryable: bool,
     pub(crate) exit_code: i32,
+    pub(crate) details: Option<serde_json::Value>,
 }
 
 pub(crate) type AppResult<T> = Result<T, AppError>;
@@ -37,7 +38,13 @@ impl AppError {
             message: message.into(),
             retryable: false,
             exit_code: 1,
+            details: None,
         }
+    }
+
+    pub(crate) fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
     }
 }
 
@@ -158,11 +165,14 @@ pub(crate) fn write_json(value: &serde_json::Value, pretty: bool) -> io::Result<
 }
 
 pub(crate) fn write_error(err: &AppError, pretty: bool) -> io::Result<()> {
-    let value = json!({
+    let mut value = json!({
         "ok": false,
         "code": err.code,
         "message": err.message,
         "retryable": err.retryable,
     });
+    if let Some(details) = &err.details {
+        value["details"] = details.clone();
+    }
     write_json(&value, pretty)
 }
