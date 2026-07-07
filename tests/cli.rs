@@ -333,6 +333,50 @@ fn publish_yes_reaches_typub_backend_and_validates_credentials() {
 }
 
 #[test]
+fn publish_item_error_preserves_the_full_context_chain() {
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.root.join("_assets")).expect("create _assets");
+    fs::write(fixture.root.join("_assets/figure.png"), b"png").expect("write asset");
+    fs::write(
+        fixture.root.join("projects/cuda-agent/perf/occupancy.md"),
+        "# Occupancy\n\n![figure](assets/figure.png)\n",
+    )
+    .expect("rewrite doc with asset reference");
+
+    let base_url = start_confluence_attachment_failure_server();
+    configure_with_base_url(&fixture, &base_url);
+
+    let value = run_json(
+        fixture
+            .command()
+            .env("CONFLUENCE_API_KEY", "test-token")
+            .env("CONFLUENCE_EMAIL", "test@example.com")
+            .arg("publish")
+            .arg("--yes"),
+    );
+    assert_eq!(value["ok"], true);
+    let items = value["data"]["items"].as_array().expect("items array");
+    let item = items
+        .iter()
+        .find(|item| item["path"] == "projects/cuda-agent/perf/occupancy.md")
+        .expect("attachment document item");
+    assert_eq!(item["status"], "failed");
+
+    // The outermost context alone used to be the entire message; the item
+    // error must now carry the remote cause (status and body) as well.
+    let error = item["error"].as_str().expect("error string");
+    assert!(
+        error.contains("attachment"),
+        "outer context names the attachment step: {error}"
+    );
+    assert!(error.contains("403"), "chain carries the status: {error}");
+    assert!(
+        error.contains("attachment quota exceeded"),
+        "chain carries the remote body: {error}"
+    );
+}
+
+#[test]
 fn publish_missing_base_url_hint_mentions_conpub_environment_default() {
     let fixture = Fixture::new();
     run_json(fixture.command().arg("root").arg(&fixture.root));
@@ -921,6 +965,65 @@ fn with_stage_workdir(stage_root: &Path, op: impl FnOnce()) {
 
 fn start_archive_server() -> (String, mpsc::Receiver<String>) {
     start_archive_server_with_response("202 Accepted", r#"{"id":"task-1"}"#)
+}
+
+/// Mock Confluence for the publish pipeline: every title lookup finds an
+/// existing page (so provision creates nothing), attachment uploads are
+/// rejected with a distinctive status and body, and everything else
+/// succeeds. Serves connections until the listener is dropped.
+fn start_confluence_attachment_failure_server() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind test server");
+    let addr = listener.local_addr().expect("server addr");
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set timeout");
+            let mut buffer = [0_u8; 8192];
+            let mut bytes = Vec::new();
+            loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        bytes.extend_from_slice(&buffer[..read]);
+                        if read < buffer.len() {
+                            break;
+                        }
+                    }
+                    Err(err)
+                        if err.kind() == std::io::ErrorKind::WouldBlock
+                            || err.kind() == std::io::ErrorKind::TimedOut =>
+                    {
+                        break;
+                    }
+                    Err(_) => break,
+                }
+            }
+            let request = String::from_utf8_lossy(&bytes);
+            let request_line = request.lines().next().unwrap_or_default();
+            let (status, body) = if request_line.starts_with("GET") {
+                (
+                    "200 OK",
+                    r#"{"results":[{"id":"42","type":"page","status":"current","title":"found","version":{"number":1},"_links":{"webui":"/spaces/GPU/pages/42"}}],"size":1}"#,
+                )
+            } else if request_line.contains("/child/attachment") {
+                ("403 Forbidden", "attachment quota exceeded")
+            } else {
+                (
+                    "200 OK",
+                    r#"{"id":"42","type":"page","status":"current","title":"found","version":{"number":2},"_links":{"webui":"/spaces/GPU/pages/42"}}"#,
+                )
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    format!("http://{addr}")
 }
 
 fn start_archive_server_with_response(
