@@ -220,9 +220,26 @@ where
     })
 }
 
+pub(crate) fn expand_tilde(path: &Path) -> AppResult<PathBuf> {
+    let text = path.to_string_lossy();
+    if text == "~" {
+        return env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| AppError::new("HOME_NOT_SET", "HOME is not set"));
+    }
+
+    if let Some(rest) = text.strip_prefix("~/") {
+        let home = env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| AppError::new("HOME_NOT_SET", "HOME is not set"))?;
+        return Ok(home.join(rest));
+    }
+
+    Ok(path.to_path_buf())
+}
+
 #[cfg(test)]
 mod credential_tests {
-    #![allow(clippy::expect_used)]
     use super::*;
 
     fn creds(api_key: Option<&str>, email: Option<&str>) -> ConfluenceCredentials {
@@ -253,22 +270,4 @@ mod credential_tests {
         assert_eq!(merged.api_key.as_deref(), Some("k"));
         assert_eq!(merged.email.as_deref(), Some("e"));
     }
-}
-
-pub(crate) fn expand_tilde(path: &Path) -> AppResult<PathBuf> {
-    let text = path.to_string_lossy();
-    if text == "~" {
-        return env::var_os("HOME")
-            .map(PathBuf::from)
-            .ok_or_else(|| AppError::new("HOME_NOT_SET", "HOME is not set"));
-    }
-
-    if let Some(rest) = text.strip_prefix("~/") {
-        let home = env::var_os("HOME")
-            .map(PathBuf::from)
-            .ok_or_else(|| AppError::new("HOME_NOT_SET", "HOME is not set"))?;
-        return Ok(home.join(rest));
-    }
-
-    Ok(path.to_path_buf())
 }
