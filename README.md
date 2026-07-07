@@ -29,6 +29,10 @@ conpub sync --dry-run perf/occupancy.md
 conpub sync --yes perf/occupancy.md docs/
 conpub sync --dry-run --archive-deleted
 conpub sync --yes --archive-deleted
+conpub prune
+conpub prune --yes
+conpub prune --yes --archive
+conpub prune --yes --delete
 conpub status
 ```
 
@@ -41,6 +45,10 @@ conpub status
 `sync --yes` publishes only `create` and `update` documents, then records successful publishes in the local sync state. It does not read from Confluence and does not delete remote pages for locally deleted files.
 
 `sync` accepts optional file or directory paths relative to the bound source or configured root. In subset mode it reports only selected documents and does not report global `deleted` entries.
+
+A `deleted` entry whose Confluence page id is owned by a live document classifies as `superseded`: after a local move, provision adopts the remote page by title under the new path, so the old entry points at a page that is still alive. Superseded entries are never archived or deleted remotely — `sync` and `prune` drop them from local state without any remote action.
+
+`prune` reconciles `deleted` state entries explicitly. Without flags it only drops them from local state, leaving remote pages in place; `prune --yes --archive` archives the pages first; `prune --yes --delete` deletes them permanently (a 404 counts as already gone, so reruns are idempotent). `--archive` and `--delete` are mutually exclusive. Without `--yes`, `prune` reports what it would do and changes nothing.
 
 `index` writes a persistent local search index. `search` uses the index only when it is fresh for the current source and document fingerprints; otherwise it falls back to scanning local files.
 
@@ -91,7 +99,7 @@ Remote Confluence IDs, URLs, and publish status are owned by typub's status data
 <stage-root>/.typub/status.db
 ```
 
-For a real Confluence smoke test, bind a disposable source directory to a disposable parent page and run `conpub sync --yes <smoke-file>`. `conpub` intentionally has no default remote delete/archive behavior; deleted local files are reported as `deleted` so humans or a later explicit prune command can decide what to archive remotely.
+For a real Confluence smoke test, bind a disposable source directory to a disposable parent page and run `conpub sync --yes <smoke-file>`. `conpub` intentionally has no default remote delete/archive behavior; deleted local files are reported as `deleted` so a human can decide with `conpub prune` (state-only, `--archive`, or `--delete`) what should happen remotely.
 
 Use `sync --archive-deleted --yes` to archive deleted pages whose Confluence page IDs are already known in typub status. This calls Confluence Cloud's `POST /wiki/rest/api/content/archive` endpoint and removes accepted archived entries from local sync state. It does not search Confluence for pages to archive.
 

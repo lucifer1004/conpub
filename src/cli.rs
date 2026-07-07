@@ -107,6 +107,19 @@ pub(crate) enum Command {
         #[arg(long)]
         archive_deleted: bool,
     },
+    /// Reconcile deleted state entries: drop bookkeeping residue, optionally
+    /// archiving or permanently deleting the remote pages first.
+    Prune {
+        /// Confirm state changes (and remote writes with --archive/--delete).
+        #[arg(long)]
+        yes: bool,
+        /// Archive the Confluence pages of deleted entries before dropping them.
+        #[arg(long)]
+        archive: bool,
+        /// Permanently delete the Confluence pages of deleted entries before dropping them.
+        #[arg(long)]
+        delete: bool,
+    },
     /// Show local configuration and publish status summary.
     Status,
 }

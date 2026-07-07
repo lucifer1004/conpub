@@ -7,7 +7,7 @@ use crate::infrastructure::resolve_config;
 use crate::support::{AppResult, ok};
 use binding::{cmd_bind, cmd_root, cmd_status};
 use local_query::{cmd_index, cmd_read, cmd_search};
-use publishing::{cmd_plan, cmd_publish, cmd_sync};
+use publishing::{cmd_plan, cmd_prune, cmd_publish, cmd_sync};
 use serde_json::json;
 
 pub(crate) fn run(cli: Cli) -> AppResult<serde_json::Value> {
@@ -45,6 +45,11 @@ pub(crate) fn run(cli: Cli) -> AppResult<serde_json::Value> {
             concurrency,
             archive_deleted,
         } => cmd_sync(paths, yes, dry_run, delay_ms, concurrency, archive_deleted),
+        Command::Prune {
+            yes,
+            archive,
+            delete,
+        } => cmd_prune(yes, archive, delete),
         Command::Status => cmd_status(),
     }
 }

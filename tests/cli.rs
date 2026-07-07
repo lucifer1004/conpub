@@ -698,6 +698,184 @@ fn sync_archive_deleted_yes_hides_failed_archive_response_body() {
     assert!(request.contains("POST /wiki/rest/api/content/archive"));
 }
 
+/// Simulate a local move whose remote page was adopted by title under the
+/// new path: the old path's deleted entry carries the SAME page id as the
+/// live document and must classify `superseded`, never `pending_archive`.
+fn stage_moved_document(fixture: &Fixture) -> Value {
+    let first = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run(fixture, &first);
+    seed_typub_platform_status(fixture, &first, "projects/cuda-agent/notes.typ", "42");
+    fs::remove_file(fixture.root.join("projects/cuda-agent/notes.typ")).expect("remove typst");
+    fs::write(
+        fixture.root.join("projects/cuda-agent/notes-moved.typ"),
+        "= CUDA Notes\n",
+    )
+    .expect("write moved typst");
+    let second = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    seed_typub_platform_status(
+        fixture,
+        &second,
+        "projects/cuda-agent/notes-moved.typ",
+        "42",
+    );
+    second
+}
+
+#[test]
+fn sync_dry_run_marks_moved_document_deleted_entry_superseded() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    stage_moved_document(&fixture);
+
+    let sync = run_json(
+        fixture
+            .command()
+            .arg("sync")
+            .arg("--dry-run")
+            .arg("--archive-deleted"),
+    );
+
+    let items = sync["data"]["items"].as_array().expect("items array");
+    let deleted = items
+        .iter()
+        .find(|item| item["path"] == "projects/cuda-agent/notes.typ")
+        .expect("deleted item");
+    assert_eq!(deleted["action"], "deleted");
+    assert_eq!(deleted["status"], "superseded");
+    assert_eq!(deleted["platform_id"], "42");
+    let moved = items
+        .iter()
+        .find(|item| item["path"] == "projects/cuda-agent/notes-moved.typ")
+        .expect("moved item");
+    assert_eq!(moved["platform_id"], "42");
+    assert_eq!(sync["data"]["summary"]["superseded"], 1);
+}
+
+#[test]
+fn prune_without_yes_reports_pending_actions_and_keeps_state() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    let first = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run(&fixture, &first);
+    fs::remove_file(fixture.root.join("projects/cuda-agent/notes.typ")).expect("remove typst");
+
+    let prune = run_json(fixture.command().arg("prune"));
+
+    assert_eq!(prune["data"]["dry_run"], true);
+    let item = prune["data"]["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|item| item["path"] == "projects/cuda-agent/notes.typ")
+        .expect("deleted item");
+    assert_eq!(item["status"], "pending_prune");
+    let state: Value =
+        serde_json::from_str(&fs::read_to_string(sync_state_path(&fixture)).expect("read state"))
+            .expect("parse state");
+    assert!(!state["documents"]["projects/cuda-agent/notes.typ"].is_null());
+}
+
+#[test]
+fn prune_yes_drops_stale_entries_without_remote_calls() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    let first = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run(&fixture, &first);
+    fs::remove_file(fixture.root.join("projects/cuda-agent/notes.typ")).expect("remove typst");
+
+    let prune = run_json(fixture.command().arg("prune").arg("--yes"));
+
+    assert_eq!(prune["data"]["pruned"], 1);
+    let item = prune["data"]["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|item| item["path"] == "projects/cuda-agent/notes.typ")
+        .expect("pruned item");
+    assert_eq!(item["status"], "pruned");
+    let state: Value =
+        serde_json::from_str(&fs::read_to_string(sync_state_path(&fixture)).expect("read state"))
+            .expect("parse state");
+    assert!(state["documents"]["projects/cuda-agent/notes.typ"].is_null());
+}
+
+#[test]
+fn prune_yes_delete_removes_remote_page_and_drops_state_entry() {
+    let fixture = Fixture::new();
+    let (base_url, request_rx) = start_archive_server_with_response("204 No Content", "");
+    configure_with_base_url(&fixture, &base_url);
+    let first = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run_with_base_url(&fixture, &first, &base_url);
+    seed_typub_platform_status(&fixture, &first, "projects/cuda-agent/notes.typ", "42");
+    fs::remove_file(fixture.root.join("projects/cuda-agent/notes.typ")).expect("remove typst");
+
+    let prune = run_json(
+        fixture
+            .command()
+            .env("CONFLUENCE_EMAIL", "agent@example.com")
+            .env("CONFLUENCE_API_KEY", "token")
+            .arg("prune")
+            .arg("--yes")
+            .arg("--delete"),
+    );
+
+    assert_eq!(prune["ok"], true);
+    let request = request_rx.recv().expect("delete request");
+    assert!(request.contains("DELETE /wiki/rest/api/content/42"));
+    let item = prune["data"]["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|item| item["path"] == "projects/cuda-agent/notes.typ")
+        .expect("deleted item");
+    assert_eq!(item["status"], "deleted_remote");
+    let state: Value =
+        serde_json::from_str(&fs::read_to_string(sync_state_path(&fixture)).expect("read state"))
+            .expect("parse state");
+    assert!(state["documents"]["projects/cuda-agent/notes.typ"].is_null());
+}
+
+#[test]
+fn prune_yes_superseded_entry_dropped_without_remote_action() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    stage_moved_document(&fixture);
+
+    // No mock server and no credentials: a superseded entry must be resolved
+    // purely in local state, whatever remote flags a later run might add.
+    let prune = run_json(fixture.command().arg("prune").arg("--yes"));
+
+    let item = prune["data"]["items"]
+        .as_array()
+        .expect("items array")
+        .iter()
+        .find(|item| item["path"] == "projects/cuda-agent/notes.typ")
+        .expect("superseded item");
+    assert_eq!(item["status"], "superseded");
+    let state: Value =
+        serde_json::from_str(&fs::read_to_string(sync_state_path(&fixture)).expect("read state"))
+            .expect("parse state");
+    assert!(state["documents"]["projects/cuda-agent/notes.typ"].is_null());
+}
+
+#[test]
+fn prune_rejects_conflicting_archive_and_delete_flags() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let prune = run_failure_json(
+        fixture
+            .command()
+            .arg("prune")
+            .arg("--yes")
+            .arg("--archive")
+            .arg("--delete"),
+    );
+
+    assert_eq!(prune["ok"], false);
+    assert_eq!(prune["code"], "PRUNE_CONFLICTING_FLAGS");
+}
+
 #[test]
 fn sync_fingerprint_includes_shared_assets() {
     let fixture = Fixture::new();

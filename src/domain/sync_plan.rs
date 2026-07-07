@@ -77,7 +77,11 @@ pub(crate) fn build_sync_plan(
                 platform_id: None,
                 archive_task_id: None,
                 error: None,
-                reason: Some("local file is missing; remote delete is not implemented".to_string()),
+                reason: Some(
+                    "local file is missing; run `conpub prune` to reconcile \
+                     (optionally --archive or --delete the remote page)"
+                        .to_string(),
+                ),
             })
             .collect::<Vec<_>>();
         deleted.sort_by(|a, b| a.path.cmp(&b.path));
@@ -123,13 +127,55 @@ pub(crate) fn merge_publish_results_into_sync_items(
     }
 }
 
+/// Mark deleted entries whose Confluence page id is owned by a live document.
+///
+/// After a local move, provision adopts the remote page by title under the
+/// new path, so the old path's deleted entry points at a page that is alive
+/// under the new path; archiving or deleting through that entry would take
+/// down the adopted page. Such entries are bookkeeping residue: they are
+/// dropped from state without any remote action.
+pub(crate) fn mark_superseded_deleted(items: &mut [SyncItemResult]) {
+    let live_ids = items
+        .iter()
+        .filter(|item| item.action != "deleted")
+        .filter_map(|item| item.platform_id.clone())
+        .collect::<HashSet<_>>();
+
+    for item in items {
+        if item.action == "deleted"
+            && item
+                .platform_id
+                .as_ref()
+                .is_some_and(|id| live_ids.contains(id))
+        {
+            item.status = "superseded".to_string();
+            item.reason = Some(
+                "page id is owned by a live document (adopted after a move); \
+                 the state entry is dropped without remote action"
+                    .to_string(),
+            );
+        }
+    }
+}
+
+pub(crate) fn remove_superseded_deleted_from_state(
+    state: &mut SyncState,
+    items: &[SyncItemResult],
+) {
+    for item in items {
+        if item.action == "deleted" && item.status == "superseded" {
+            state.documents.remove(&item.path);
+        }
+    }
+}
+
 pub(crate) fn apply_archive_deleted_plan(items: &mut [SyncItemResult], archive_deleted: bool) {
     if !archive_deleted {
         return;
     }
 
     for item in items {
-        if item.action != "deleted" {
+        if item.action != "deleted" || item.status == "superseded" {
             continue;
         }
 
@@ -187,11 +233,17 @@ pub(crate) fn sync_counts(items: &[SyncItemResult]) -> serde_json::Value {
         *counts.entry(item.action.as_str()).or_default() += 1;
     }
 
+    let superseded = items
+        .iter()
+        .filter(|item| item.status == "superseded")
+        .count();
+
     json!({
         "create": counts.get("create").copied().unwrap_or(0),
         "update": counts.get("update").copied().unwrap_or(0),
         "unchanged": counts.get("unchanged").copied().unwrap_or(0),
         "deleted": counts.get("deleted").copied().unwrap_or(0),
+        "superseded": superseded,
     })
 }
 
@@ -247,5 +299,85 @@ mod tests {
             entry.parent_path.as_deref(),
             Some("projects/cuda-agent/_index.md")
         );
+    }
+
+    fn item(path: &str, action: &str, platform_id: Option<&str>) -> SyncItemResult {
+        SyncItemResult {
+            path: path.to_string(),
+            title: "Notes".to_string(),
+            slug: path.replace(['/', '.'], "-"),
+            parent_path: None,
+            parent_id: None,
+            action: action.to_string(),
+            status: "skipped".to_string(),
+            fingerprint: None,
+            previous_fingerprint: None,
+            url: None,
+            platform_id: platform_id.map(str::to_string),
+            archive_task_id: None,
+            error: None,
+            reason: None,
+        }
+    }
+
+    #[test]
+    fn superseded_marks_only_deleted_entries_whose_id_is_owned_by_a_live_item() {
+        let mut items = vec![
+            item("a/new.md", "update", Some("42")),
+            item("a/old.md", "deleted", Some("42")),
+            item("a/gone.md", "deleted", Some("43")),
+            item("a/unknown.md", "deleted", None),
+        ];
+
+        mark_superseded_deleted(&mut items);
+
+        assert_eq!(items[1].status, "superseded");
+        assert_eq!(items[2].status, "skipped");
+        assert_eq!(items[3].status, "skipped");
+    }
+
+    #[test]
+    fn archive_plan_never_targets_superseded_entries() {
+        let mut items = vec![
+            item("a/new.md", "update", Some("42")),
+            item("a/old.md", "deleted", Some("42")),
+            item("a/gone.md", "deleted", Some("43")),
+        ];
+        mark_superseded_deleted(&mut items);
+
+        apply_archive_deleted_plan(&mut items, true);
+
+        assert_eq!(items[1].status, "superseded");
+        assert_eq!(items[2].status, "pending_archive");
+    }
+
+    #[test]
+    fn superseded_entries_are_dropped_from_state() {
+        let mut items = vec![
+            item("a/new.md", "update", Some("42")),
+            item("a/old.md", "deleted", Some("42")),
+        ];
+        mark_superseded_deleted(&mut items);
+        let mut state = SyncState::new(SyncStateIdentity {
+            root: "/kb".to_string(),
+            source: "a".to_string(),
+            base_url: None,
+            space: "GPU".to_string(),
+            parent_id: "1".to_string(),
+        });
+        state.documents.insert(
+            "a/old.md".to_string(),
+            SyncStateDocument {
+                fingerprint: "f0".to_string(),
+                title: "Notes".to_string(),
+                slug: "a-old-md".to_string(),
+                parent_path: None,
+                synced_at: 1,
+            },
+        );
+
+        remove_superseded_deleted_from_state(&mut state, &items);
+
+        assert!(state.documents.is_empty());
     }
 }

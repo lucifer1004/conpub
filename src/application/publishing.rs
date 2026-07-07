@@ -196,6 +196,7 @@ pub(crate) fn cmd_sync(
         &prepared.resolved.source,
     );
     join_sync_items_with_typub_status(&prepared.stage_root, &mut items)?;
+    mark_superseded_deleted(&mut items);
     apply_archive_deleted_plan(&mut items, archive_deleted);
 
     if dry_run {
@@ -222,6 +223,12 @@ pub(crate) fn cmd_sync(
         update_sync_state_from_sync_results(&mut state, &prepared.snapshots, &items);
     }
 
+    // Re-mark after publish results land: a create that adopted an existing
+    // page by title only now carries its page id, and the matching deleted
+    // entry must never reach the archive call below.
+    mark_superseded_deleted(&mut items);
+    remove_superseded_deleted_from_state(&mut state, &items);
+
     if archive_deleted {
         let archive_submitted = runtime_archive_deleted(&prepared.resolved, &mut items)?;
         if archive_submitted {
@@ -245,6 +252,111 @@ pub(crate) fn cmd_sync(
         "failed": failed,
         "pacing": publish_pacing_json(delay_ms, concurrency),
         "summary": sync_counts(&items),
+        "items": items,
+    })))
+}
+
+/// Reconcile deleted state entries. Default is bookkeeping-only: entries are
+/// dropped from the local state and the remote pages are left in place.
+/// `--archive` archives the pages first; `--delete` deletes them permanently.
+/// Superseded entries (page id owned by a live document after an adoption)
+/// are always dropped without any remote action, whatever flags are set.
+pub(crate) fn cmd_prune(yes: bool, archive: bool, delete: bool) -> AppResult<serde_json::Value> {
+    if archive && delete {
+        return Err(AppError::new(
+            "PRUNE_CONFLICTING_FLAGS",
+            "--archive and --delete are mutually exclusive",
+        ));
+    }
+
+    let (prepared, _subset) = prepare_publish_set(&[])?;
+    let _state_lock = if yes {
+        Some(lock_sync_state(&prepared.stage_root)?)
+    } else {
+        None
+    };
+    let mut state = load_sync_state(&prepared.state_path, &prepared.identity)?;
+    let (mut items, _) =
+        build_sync_plan(&prepared.snapshots, &state, true, &prepared.resolved.source);
+    join_sync_items_with_typub_status(&prepared.stage_root, &mut items)?;
+    mark_superseded_deleted(&mut items);
+    let mut items = items
+        .into_iter()
+        .filter(|item| item.action == "deleted")
+        .collect::<Vec<_>>();
+
+    for item in &mut items {
+        if item.status == "superseded" {
+            continue;
+        }
+        let (status, reason) = match (&item.platform_id, archive, delete) {
+            (Some(_), true, _) => (
+                "pending_archive",
+                "would archive the Confluence page, then drop the state entry",
+            ),
+            (Some(_), _, true) => (
+                "pending_delete",
+                "would delete the Confluence page permanently, then drop the state entry",
+            ),
+            (Some(_), false, false) => (
+                "pending_prune",
+                "would drop the state entry; the Confluence page is left in place",
+            ),
+            (None, ..) => (
+                "pending_prune",
+                "no Confluence page id is known; would drop the state entry",
+            ),
+        };
+        item.status = status.to_string();
+        item.reason = Some(reason.to_string());
+    }
+
+    if !yes {
+        return Ok(ok(json!({
+            "dry_run": true,
+            "archive": archive,
+            "delete": delete,
+            "target": &prepared.resolved.target,
+            "state_file": display_path(&prepared.state_path),
+            "count": items.len(),
+            "items": items,
+        })));
+    }
+
+    if archive {
+        runtime_archive_deleted(&prepared.resolved, &mut items)?;
+    } else if delete {
+        runtime_delete_deleted(&prepared.resolved, &mut items)?;
+    }
+
+    let mut pruned = 0_usize;
+    for item in &mut items {
+        let drop_entry = matches!(
+            item.status.as_str(),
+            "superseded" | "archived" | "deleted_remote" | "pending_prune"
+        );
+        if drop_entry {
+            state.documents.remove(&item.path);
+            pruned += 1;
+            if item.status == "pending_prune" {
+                item.status = "pruned".to_string();
+                item.reason = Some("state entry dropped".to_string());
+            }
+        }
+    }
+    write_sync_state(&prepared.state_path, &state)?;
+
+    let failed = items.iter().filter(|item| item.status == "failed").count();
+
+    Ok(ok(json!({
+        "dry_run": false,
+        "archive": archive,
+        "delete": delete,
+        "target": &prepared.resolved.target,
+        "state_file": display_path(&prepared.state_path),
+        "count": items.len(),
+        "pruned": pruned,
+        "failed": failed,
         "items": items,
     })))
 }
