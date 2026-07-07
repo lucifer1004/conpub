@@ -4339,9 +4339,9 @@ dependencies = [
 
 [[package]]
 name = "typub-adapter-confluence"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9052f1b073f87f4911a13608e103749f366078a8bfc32d5f7ffffda3af87c290"
+checksum = "81a117b58d6d45c8965a7e9641b2ee67eb210a596c1cab4212729ef1ee261977"
 dependencies = [
  "anyhow",
  "async-trait",
