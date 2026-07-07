@@ -8,6 +8,7 @@ pub(crate) const SYNC_STATE_VERSION: u32 = 2;
 pub(crate) struct UserConfig {
     pub(crate) root: Option<PathBuf>,
     pub(crate) base_url: Option<String>,
+    pub(crate) confluence: Option<ConfluenceCredentials>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,6 +17,16 @@ pub(crate) struct ProjectConfig {
     pub(crate) space: String,
     pub(crate) parent_id: String,
     pub(crate) base_url: Option<String>,
+    pub(crate) confluence: Option<ConfluenceCredentials>,
+}
+
+/// Confluence credentials from `[confluence]` in the user or project config.
+/// Resolved env-over-project-over-user and handed to the typub platform
+/// config in memory only — never serialized into resolve/plan output.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub(crate) struct ConfluenceCredentials {
+    pub(crate) api_key: Option<String>,
+    pub(crate) email: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -99,8 +110,8 @@ pub(crate) struct ReadResult {
 pub(crate) struct PlanItem {
     pub(crate) path: String,
     pub(crate) title: String,
-    pub(crate) action: &'static str,
-    pub(crate) reason: &'static str,
+    pub(crate) action: String,
+    pub(crate) reason: String,
     pub(crate) confluence_url: Option<String>,
 }
 

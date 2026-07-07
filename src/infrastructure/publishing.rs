@@ -1,6 +1,6 @@
 use crate::domain::*;
 use crate::infrastructure::assets::stage_shared_assets;
-use crate::infrastructure::config::conpub_home;
+use crate::infrastructure::config::{conpub_home, resolve_confluence_credentials};
 use crate::infrastructure::{get_platform_id, new_publish_context_with_stage_status};
 use crate::support::*;
 use chrono::NaiveDate;
@@ -102,6 +102,9 @@ pub(crate) async fn publish_snapshots_with_hierarchy(
                     error: None,
                 });
             }
+            // Alternate anyhow rendering keeps the whole context chain; the
+            // outermost message alone has already misattributed a local
+            // staged-asset read failure as a remote upload error.
             Err(err) => results.push(PublishItemResult {
                 path: snapshot.document.path,
                 title: snapshot.document.title,
@@ -111,7 +114,7 @@ pub(crate) async fn publish_snapshots_with_hierarchy(
                 status: "failed".to_string(),
                 url: None,
                 platform_id: None,
-                error: Some(err.to_string()),
+                error: Some(format!("{err:#}")),
             }),
         }
     }
@@ -179,6 +182,17 @@ pub(crate) fn build_typub_config(
         "parent_id".to_string(),
         toml::Value::String(resolved.target.parent_id.clone()),
     );
+
+    // Credentials resolve env-over-project-over-user and travel only inside
+    // this in-memory typub config; they never reach resolve/plan/status
+    // output or the staged files on disk.
+    let credentials = resolve_confluence_credentials()?;
+    if let Some(api_key) = credentials.api_key {
+        extra.insert("api_key".to_string(), toml::Value::String(api_key));
+    }
+    if let Some(email) = credentials.email {
+        extra.insert("email".to_string(), toml::Value::String(email));
+    }
 
     let mut platforms = HashMap::new();
     platforms.insert(

@@ -79,6 +79,8 @@ Reference these files from Markdown or Typst as `assets/<name>`, for example `![
 
 Sync fingerprints include the document and the safe shared `_assets` set. Changing `_assets` can mark documents as changed because `conpub` intentionally leaves exact reference parsing to typub. Other Markdown and Typst files are treated as separate documents, not assets. `conpub` rejects slug collisions before planning, syncing, or publishing.
 
+`plan` additionally scans each document for `assets/<name>` references (markdown images/links, typst `#image("assets/...")`, html `src="assets/..."`) and marks documents whose references are not present in `_assets/` as `blocked`, naming each missing reference. `publish` and `sync` refuse such a set locally, before staging or any remote write — an asset placed next to the document instead of under `<root>/_assets/` is caught here instead of failing half-way through a remote publish.
+
 The local sync state is written under a per-target file lock with atomic replacement and is bound to the configured root, base URL, space, and parent page. Multiple project bindings that share the same root and Confluence target share this state. The bound source only limits the current scan and deleted-file detection scope. The state stores only local KB metadata such as fingerprints, titles, slugs, parent paths, and sync timestamps.
 
 Remote Confluence IDs, URLs, and publish status are owned by typub's status database under the generated stage root:
@@ -91,12 +93,21 @@ For a real Confluence smoke test, bind a disposable source directory to a dispos
 
 Use `sync --archive-deleted --yes` to archive deleted pages whose Confluence page IDs are already known in typub status. This calls Confluence Cloud's `POST /wiki/rest/api/content/archive` endpoint and removes accepted archived entries from local sync state. It does not search Confluence for pages to archive.
 
-Confluence credentials are read by the typub Confluence adapter from:
+Confluence credentials resolve per field with this precedence:
 
 ```text
-CONFLUENCE_EMAIL
-CONFLUENCE_API_KEY
+CONFLUENCE_API_KEY / CONFLUENCE_EMAIL      (environment, wins)
+[confluence] api_key / email in .conpub.toml      (project)
+[confluence] api_key / email in ~/.config/conpub/conpub.toml   (user)
 ```
+
+```toml
+[confluence]
+api_key = "<atlassian-api-token>"
+email = "you@example.com"
+```
+
+Resolved credentials travel only inside the in-memory typub platform config; they are never written to the stage, and never appear in `resolve`, `plan`, `status`, or `bind` output. Re-running `conpub bind` or `conpub root` preserves an existing `[confluence]` section.
 
 The `--base-url` value may include `/wiki`; `conpub` normalizes it before passing it to typub.
 

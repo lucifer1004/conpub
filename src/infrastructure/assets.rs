@@ -252,3 +252,109 @@ pub(crate) fn copy_path(source: &Path, destination: &Path) -> AppResult<()> {
         )
     })
 }
+
+/// Best-effort scan of document text for staged-asset references.
+///
+/// Documents reference shared assets as `assets/<name>`; staging provides
+/// them from the root `_assets/` directory. Recognized forms: markdown
+/// `](assets/...)` and quoted `"assets/..."` (typst `image("assets/...")`,
+/// html `src="assets/..."`). Returned names are relative to `assets/`.
+pub(crate) fn referenced_staged_assets(text: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (open, close) in [("](assets/", ')'), ("\"assets/", '"')] {
+        let mut rest = text;
+        while let Some(pos) = rest.find(open) {
+            let tail = &rest[pos + open.len()..];
+            let end = tail
+                .find(|c: char| c == close || c.is_whitespace())
+                .unwrap_or(tail.len());
+            let name = &tail[..end];
+            if !name.is_empty() && seen.insert(name.to_string()) {
+                refs.push(name.to_string());
+            }
+            rest = &tail[end..];
+        }
+    }
+    refs
+}
+
+/// Check every document's `assets/` references against the shared `_assets/`
+/// directory. Returns `(document path, missing references)` pairs; an entry's
+/// references are formatted as referenced (`assets/<name>`).
+pub(crate) fn missing_staged_asset_references(
+    root: &Path,
+    documents: &[Document],
+) -> AppResult<Vec<(String, Vec<String>)>> {
+    let shared: std::collections::HashSet<String> = shared_asset_files(root)?
+        .into_iter()
+        .map(|asset| asset.relative)
+        .collect();
+
+    let mut missing = Vec::new();
+    for document in documents {
+        let path = root.join(&document.path);
+        let text = fs::read_to_string(&path).map_err(|err| {
+            AppError::new(
+                "FILE_READ_ERROR",
+                format!("failed to read {}: {err}", path.display()),
+            )
+        })?;
+        let missing_refs: Vec<String> = referenced_staged_assets(&text)
+            .into_iter()
+            .filter(|reference| !shared.contains(reference))
+            .map(|reference| format!("assets/{reference}"))
+            .collect();
+        if !missing_refs.is_empty() {
+            missing.push((document.path.clone(), missing_refs));
+        }
+    }
+    Ok(missing)
+}
+
+#[cfg(test)]
+mod reference_tests {
+    #![allow(clippy::expect_used)]
+    use super::*;
+
+    #[test]
+    fn markdown_typst_and_html_references_are_found() {
+        let text = r#"
+![figure](assets/fig.png)
+![titled](assets/plot.svg "a title")
+#image("assets/diagram.png")
+<img src="assets/photo.jpg">
+not a ref: assets/loose.png and [link](https://example.com)
+"#;
+        let refs = referenced_staged_assets(text);
+        assert_eq!(
+            refs,
+            vec!["fig.png", "plot.svg", "diagram.png", "photo.jpg"]
+        );
+    }
+
+    #[test]
+    fn missing_references_name_document_and_reference() {
+        let dir = std::env::temp_dir().join("conpub-asset-ref-test");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("_assets")).expect("mkdir assets");
+        fs::create_dir_all(dir.join("notes")).expect("mkdir notes");
+        fs::write(dir.join("_assets/present.png"), b"png").expect("write asset");
+        fs::write(
+            dir.join("notes/doc.md"),
+            "![ok](assets/present.png)\n![gone](assets/absent.png)\n",
+        )
+        .expect("write doc");
+
+        let documents = vec![Document {
+            path: "notes/doc.md".to_string(),
+            title: "doc".to_string(),
+            extension: "md".to_string(),
+        }];
+        let missing = missing_staged_asset_references(&dir, &documents).expect("scan");
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].0, "notes/doc.md");
+        assert_eq!(missing[0].1, vec!["assets/absent.png".to_string()]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

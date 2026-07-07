@@ -85,17 +85,28 @@ pub(crate) fn cmd_bind(
         ));
     }
 
+    // Re-binding must not drop credentials an operator added to the project
+    // config by hand; they are preserved but never echoed into the output.
+    let existing_confluence =
+        load_project_config(&paths.project_config)?.and_then(|existing| existing.confluence);
+
     let project = ProjectConfig {
         source,
         space,
         parent_id,
         base_url: base_url.or_else(|| env_string(ENV_BASE_URL)),
+        confluence: existing_confluence,
     };
     write_toml(&paths.project_config, &project)?;
 
     Ok(ok(json!({
         "project_config": display_path(&paths.project_config),
-        "binding": project,
+        "binding": {
+            "source": project.source,
+            "space": project.space,
+            "parent_id": project.parent_id,
+            "base_url": project.base_url,
+        },
     })))
 }
 

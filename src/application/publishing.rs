@@ -11,14 +11,30 @@ pub(crate) fn cmd_plan() -> AppResult<serde_json::Value> {
     let documents = list_documents(&root, &source)?;
     validate_directory_index_conflicts(&resolved, &documents)?;
     validate_unique_slugs(&documents)?;
+    let missing_assets: std::collections::HashMap<String, Vec<String>> =
+        missing_staged_asset_references(&root, &documents)?
+            .into_iter()
+            .collect();
     let items = documents
         .into_iter()
-        .map(|doc| PlanItem {
-            path: doc.path,
-            title: doc.title,
-            action: "publish",
-            reason: "status tracking is not implemented yet",
-            confluence_url: None,
+        .map(|doc| match missing_assets.get(&doc.path) {
+            Some(missing) => PlanItem {
+                path: doc.path,
+                title: doc.title,
+                action: "blocked".to_string(),
+                reason: format!(
+                    "references assets not present in _assets/: {}",
+                    missing.join(", ")
+                ),
+                confluence_url: None,
+            },
+            None => PlanItem {
+                path: doc.path,
+                title: doc.title,
+                action: "publish".to_string(),
+                reason: "status tracking is not implemented yet".to_string(),
+                confluence_url: None,
+            },
         })
         .collect::<Vec<_>>();
 
@@ -189,6 +205,29 @@ fn prepare_publish_set(paths: &[String]) -> AppResult<(PreparedPublishSet, bool)
         all_documents.clone()
     };
     let hierarchy = build_hierarchy(&resolved, &selected_documents, &all_documents)?;
+
+    // Refuse the publish set locally when any document to be published
+    // references an asset the shared `_assets/` staging cannot provide —
+    // otherwise the failure surfaces half-way remote, after page creation.
+    let publish_documents: Vec<Document> = hierarchy
+        .iter()
+        .map(|entry| entry.document.clone())
+        .collect();
+    let missing = missing_staged_asset_references(&root, &publish_documents)?;
+    if !missing.is_empty() {
+        let detail = missing
+            .iter()
+            .map(|(path, refs)| format!("{path}: {}", refs.join(", ")))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(AppError::new(
+            "ASSET_MISSING",
+            format!(
+                "documents reference assets not present in _assets/ (place files under <root>/_assets/ and reference them as assets/<name>): {detail}"
+            ),
+        ));
+    }
+
     let stage_root = publish_stage_root(&resolved)?;
     let identity = sync_state_identity(&resolved);
     let state_path = sync_state_path(&stage_root);

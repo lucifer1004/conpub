@@ -15,6 +15,10 @@ pub(crate) const ENV_KB_ROOT: &str = "CONPUB_KB_ROOT";
 pub(crate) const ENV_BASE_URL: &str = "CONPUB_BASE_URL";
 pub(crate) const ENV_SPACE: &str = "CONPUB_SPACE";
 pub(crate) const ENV_PARENT_ID: &str = "CONPUB_PARENT_ID";
+// Shared with the typub confluence adapter, which also reads these itself;
+// conpub resolves them here so config-file credentials can participate.
+pub(crate) const ENV_CONFLUENCE_API_KEY: &str = "CONFLUENCE_API_KEY";
+pub(crate) const ENV_CONFLUENCE_EMAIL: &str = "CONFLUENCE_EMAIL";
 
 #[derive(Debug)]
 pub(crate) struct AppError {

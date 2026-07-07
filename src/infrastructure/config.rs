@@ -138,6 +138,37 @@ pub(crate) fn load_user_config(path: &Path) -> AppResult<Option<UserConfig>> {
     load_toml(path)
 }
 
+/// Resolve Confluence credentials for the typub adapter: environment first,
+/// then the project `[confluence]` table, then the user one. The result is
+/// injected into the in-memory typub platform config only; it never enters
+/// resolve/plan/status output.
+pub(crate) fn resolve_confluence_credentials() -> AppResult<ConfluenceCredentials> {
+    let paths = config_paths()?;
+    let user = load_user_config(&paths.user_config)?.unwrap_or_default();
+    let project = load_project_config(&paths.project_config)?;
+    Ok(merge_confluence_credentials(
+        ConfluenceCredentials {
+            api_key: env_string(ENV_CONFLUENCE_API_KEY),
+            email: env_string(ENV_CONFLUENCE_EMAIL),
+        },
+        project.and_then(|config| config.confluence),
+        user.confluence,
+    ))
+}
+
+fn merge_confluence_credentials(
+    env: ConfluenceCredentials,
+    project: Option<ConfluenceCredentials>,
+    user: Option<ConfluenceCredentials>,
+) -> ConfluenceCredentials {
+    let project = project.unwrap_or_default();
+    let user = user.unwrap_or_default();
+    ConfluenceCredentials {
+        api_key: env.api_key.or(project.api_key).or(user.api_key),
+        email: env.email.or(project.email).or(user.email),
+    }
+}
+
 pub(crate) fn load_project_config(path: &Path) -> AppResult<Option<ProjectConfig>> {
     load_toml(path)
 }
@@ -187,6 +218,41 @@ where
             format!("failed to write {}: {err}", path.display()),
         )
     })
+}
+
+#[cfg(test)]
+mod credential_tests {
+    #![allow(clippy::expect_used)]
+    use super::*;
+
+    fn creds(api_key: Option<&str>, email: Option<&str>) -> ConfluenceCredentials {
+        ConfluenceCredentials {
+            api_key: api_key.map(str::to_string),
+            email: email.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn env_wins_over_project_over_user_per_field() {
+        let merged = merge_confluence_credentials(
+            creds(Some("env-key"), None),
+            Some(creds(Some("project-key"), Some("project@x"))),
+            Some(creds(Some("user-key"), Some("user@x"))),
+        );
+        assert_eq!(merged.api_key.as_deref(), Some("env-key"));
+        assert_eq!(merged.email.as_deref(), Some("project@x"));
+    }
+
+    #[test]
+    fn user_config_fills_when_nothing_else_set() {
+        let merged = merge_confluence_credentials(
+            creds(None, None),
+            None,
+            Some(creds(Some("k"), Some("e"))),
+        );
+        assert_eq!(merged.api_key.as_deref(), Some("k"));
+        assert_eq!(merged.email.as_deref(), Some("e"));
+    }
 }
 
 pub(crate) fn expand_tilde(path: &Path) -> AppResult<PathBuf> {
