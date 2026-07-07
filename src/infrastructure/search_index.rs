@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const SEARCH_INDEX_VERSION: u32 = 2;
+
 pub(crate) fn search_index_path(resolved: &ResolvedConfig, all: bool) -> AppResult<PathBuf> {
     let name = if all {
         "search-index-root.json"
@@ -48,13 +50,14 @@ pub(crate) fn build_search_index(
                     .cloned()
                     .unwrap_or_default(),
                 title: document.title,
+                tags: document.tags,
                 lines: content.lines().map(str::to_string).collect(),
             },
         );
     }
 
     Ok(SearchIndex {
-        version: 1,
+        version: SEARCH_INDEX_VERSION,
         identity: search_index_identity(resolved, all),
         documents: index_documents,
     })
@@ -84,7 +87,9 @@ pub(crate) fn load_fresh_search_index(
         )
     })?;
 
-    if index.version != 1 || index.identity != search_index_identity(resolved, all) {
+    if index.version != SEARCH_INDEX_VERSION
+        || index.identity != search_index_identity(resolved, all)
+    {
         return Ok(None);
     }
 

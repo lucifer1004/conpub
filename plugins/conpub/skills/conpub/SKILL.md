@@ -161,20 +161,52 @@ Use this path when the user wants to inspect local knowledge before publishing:
 ```bash
 conpub index
 conpub search "<query>"
+conpub search --tag <tag>
+conpub search "<query>" --tag <tag> --tag <tag>
 conpub read <path>[:line]
 conpub plan
 ```
 
 `search` uses the index when fresh and falls back to scanning local files when
-needed. Use `read` for exact local source context.
+needed. The query is optional when a tag is supplied. Repeated exact `--tag`
+filters use AND semantics. Use `read` for exact local source context.
+
+## Source Tags
+
+Use a leading YAML front matter block in Markdown:
+
+```markdown
+---
+tags: [inferlab, platform]
+---
+# Result
+```
+
+Use one labelled metadata element in Typst:
+
+```typst
+#metadata((tags: ("inferlab", "platform"))) <typub-meta>
+= Result
+```
+
+Tags must be lowercase kebab-case using ASCII letters and digits, with a
+maximum length of 255 bytes. They apply only to that document; do not infer
+tags from directories or parent index pages. conpub sorts and deduplicates the
+set and exposes it in local JSON. Publishing treats local tags as authoritative
+and replaces the page's complete Confluence label set. Labels added manually or
+by another tool are removed unless they also exist locally; an empty local tag
+set clears every page label.
+
+Do not strip Markdown front matter before publishing. conpub stages the source
+unchanged and typub removes the metadata block from the rendered page body.
 
 ## Page Hierarchy
 
 Root-level documents publish under the configured Confluence parent page.
 
-For non-root directories, require `_index.md` or `index.md`. That index file is
-the parent page for documents in the directory. Nested directories need an index
-for every ancestor directory.
+For non-root directories, require `_index.md`, `index.md`, `_index.typ`, or
+`index.typ`. That index file is the parent page for documents in the directory.
+Nested directories need an index for every ancestor directory.
 
 Example:
 
@@ -268,8 +300,9 @@ Sync state and typub status are shared by KB root and Confluence target across
 project source bindings. A bound source limits the current scan and deleted-file
 detection; it does not create a separate publish state.
 
-Precise title extraction uses the `typst` CLI. If `typst` is unavailable or
-evaluation fails, conpub falls back to a filename-derived title.
+Precise title and metadata extraction uses the `typst` CLI. Untagged documents
+can fall back to filename-derived titles. Documents declaring metadata fail
+rather than silently publishing without their tags when inspection fails.
 
 ## Troubleshooting
 
@@ -277,8 +310,8 @@ evaluation fails, conpub falls back to a filename-derived title.
 - Missing target defaults: bind with `--space`, `--parent`, and optionally
   `--base-url`, or set `CONPUB_SPACE`, `CONPUB_PARENT_ID`, and
   `CONPUB_BASE_URL`.
-- Missing non-root hierarchy index: add `_index.md` or `index.md` to the
-  directory.
+- Missing non-root hierarchy index: add `_index.md`, `index.md`, `_index.typ`,
+  or `index.typ` to the directory.
 - Remote write rejected: rerun with `--yes` only after user confirmation.
 - Credential failure: verify `CONFLUENCE_EMAIL` and `CONFLUENCE_API_KEY`
   without printing their values.

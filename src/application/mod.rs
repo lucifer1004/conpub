@@ -27,7 +27,12 @@ pub(crate) fn run(cli: Cli) -> AppResult<serde_json::Value> {
             let resolved = resolve_config()?;
             Ok(ok(json!(resolved)))
         }
-        Command::Search { query, all, limit } => cmd_search(&query, all, limit),
+        Command::Search {
+            query,
+            tag,
+            all,
+            limit,
+        } => cmd_search(query.as_deref(), &tag, all, limit),
         Command::Index { all } => cmd_index(all),
         Command::Read {
             reference,

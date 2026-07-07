@@ -184,6 +184,7 @@ mod tests {
         let mut items = vec![SyncItemResult {
             path: "projects/cuda-agent/notes.typ".to_string(),
             title: "Notes".to_string(),
+            tags: Vec::new(),
             slug: slug.to_string(),
             parent_path: None,
             parent_id: None,
@@ -222,6 +223,7 @@ mod tests {
         let mut items = vec![SyncItemResult {
             path: "projects/cuda-agent/notes.typ".to_string(),
             title: "Notes".to_string(),
+            tags: Vec::new(),
             slug: slug.to_string(),
             parent_path: None,
             parent_id: None,

@@ -154,7 +154,7 @@ pub(crate) fn required_directory_index(
         AppError::new(
             "HIERARCHY_INDEX_MISSING",
             format!(
-                "missing _index.md or index.md for source-relative directory `{}` required by {}",
+                "missing _index.md, index.md, _index.typ, or index.typ for source-relative directory `{}` required by {}",
                 display_source_dir(dir),
                 child_path
             ),

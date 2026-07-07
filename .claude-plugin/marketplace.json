@@ -8,7 +8,7 @@
     {
       "name": "conpub",
       "description": "Agent Skill for configuring, querying, previewing, syncing, and publishing with conpub.",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "source": "./plugins/conpub"
     }
   ]

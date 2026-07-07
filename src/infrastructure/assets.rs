@@ -63,7 +63,7 @@ pub(crate) fn fingerprint_document(
         )
     })?;
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"conpub-document-v2\0");
+    hasher.update(b"conpub-document-v3\0");
     hasher.update(document.path.as_bytes());
     hasher.update(b"\0");
     hasher.update(&bytes);
@@ -314,7 +314,6 @@ pub(crate) fn missing_staged_asset_references(
 
 #[cfg(test)]
 mod reference_tests {
-    #![allow(clippy::expect_used)]
     use super::*;
 
     #[test]
@@ -334,27 +333,27 @@ not a ref: assets/loose.png and [link](https://example.com)
     }
 
     #[test]
-    fn missing_references_name_document_and_reference() {
-        let dir = std::env::temp_dir().join("conpub-asset-ref-test");
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(dir.join("_assets")).expect("mkdir assets");
-        fs::create_dir_all(dir.join("notes")).expect("mkdir notes");
-        fs::write(dir.join("_assets/present.png"), b"png").expect("write asset");
+    fn missing_references_name_document_and_reference() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let dir = temp.path();
+        fs::create_dir_all(dir.join("_assets"))?;
+        fs::create_dir_all(dir.join("notes"))?;
+        fs::write(dir.join("_assets/present.png"), b"png")?;
         fs::write(
             dir.join("notes/doc.md"),
             "![ok](assets/present.png)\n![gone](assets/absent.png)\n",
-        )
-        .expect("write doc");
+        )?;
 
         let documents = vec![Document {
             path: "notes/doc.md".to_string(),
             title: "doc".to_string(),
             extension: "md".to_string(),
+            tags: Vec::new(),
         }];
-        let missing = missing_staged_asset_references(&dir, &documents).expect("scan");
+        let missing = missing_staged_asset_references(dir, &documents)?;
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].0, "notes/doc.md");
         assert_eq!(missing[0].1, vec!["assets/absent.png".to_string()]);
-        let _ = fs::remove_dir_all(&dir);
+        Ok(())
     }
 }

@@ -50,8 +50,11 @@ pub(crate) enum Command {
     Resolve,
     /// Search local Markdown and Typst files.
     Search {
-        /// Case-insensitive query string.
-        query: String,
+        /// Optional case-insensitive query string.
+        query: Option<String>,
+        /// Require an exact source tag. Repeat for AND matching.
+        #[arg(long, value_name = "TAG")]
+        tag: Vec<String>,
         /// Search the whole configured root instead of the bound source.
         #[arg(long)]
         all: bool,

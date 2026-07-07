@@ -57,15 +57,17 @@ pub(crate) struct Document {
     pub(crate) path: String,
     pub(crate) title: String,
     pub(crate) extension: String,
+    pub(crate) tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct SearchMatch {
     pub(crate) path: String,
-    pub(crate) line: usize,
+    pub(crate) line: Option<usize>,
     pub(crate) read_ref: String,
     pub(crate) title: String,
-    pub(crate) snippet: String,
+    pub(crate) tags: Vec<String>,
+    pub(crate) snippet: Option<String>,
     pub(crate) confluence_url: Option<String>,
 }
 
@@ -87,6 +89,8 @@ pub(crate) struct SearchIndexIdentity {
 pub(crate) struct SearchIndexDocument {
     pub(crate) fingerprint: String,
     pub(crate) title: String,
+    #[serde(default)]
+    pub(crate) tags: Vec<String>,
     pub(crate) lines: Vec<String>,
 }
 
@@ -103,6 +107,7 @@ pub(crate) struct ReadResult {
     pub(crate) start_line: usize,
     pub(crate) end_line: usize,
     pub(crate) title: String,
+    pub(crate) tags: Vec<String>,
     pub(crate) lines: Vec<ReadLine>,
 }
 
@@ -110,6 +115,7 @@ pub(crate) struct ReadResult {
 pub(crate) struct PlanItem {
     pub(crate) path: String,
     pub(crate) title: String,
+    pub(crate) tags: Vec<String>,
     pub(crate) action: String,
     pub(crate) reason: String,
     pub(crate) confluence_url: Option<String>,
@@ -119,6 +125,7 @@ pub(crate) struct PlanItem {
 pub(crate) struct PublishItemResult {
     pub(crate) path: String,
     pub(crate) title: String,
+    pub(crate) tags: Vec<String>,
     pub(crate) slug: String,
     pub(crate) parent_path: Option<String>,
     pub(crate) parent_id: Option<String>,
@@ -132,6 +139,7 @@ pub(crate) struct PublishItemResult {
 pub(crate) struct SyncItemResult {
     pub(crate) path: String,
     pub(crate) title: String,
+    pub(crate) tags: Vec<String>,
     pub(crate) slug: String,
     pub(crate) parent_path: Option<String>,
     pub(crate) parent_id: Option<String>,

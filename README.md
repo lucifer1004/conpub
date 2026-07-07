@@ -25,6 +25,8 @@ conpub bind projects/cuda-agent
 conpub resolve
 conpub index
 conpub search "warp occupancy"
+conpub search --tag inferlab
+conpub search "occupancy" --tag inferlab --tag platform
 conpub read projects/cuda-agent/perf/occupancy.md:80
 conpub plan
 conpub publish --dry-run
@@ -75,13 +77,38 @@ A `deleted` entry whose Confluence page id is owned by a live document classifie
 
 `prune` reconciles `deleted` state entries explicitly. Without flags it only drops them from local state, leaving remote pages in place; `prune --yes --archive` archives the pages first; `prune --yes --delete` deletes them permanently (a 404 counts as already gone, so reruns are idempotent). `--archive` and `--delete` are mutually exclusive. Without `--yes`, `prune` reports what it would do and changes nothing.
 
-`index` writes a persistent local search index. `search` uses the index only when it is fresh for the current source and document fingerprints; otherwise it falls back to scanning local files.
+`index` writes a persistent local search index. `search` uses the index only when it is fresh for the current source and document fingerprints; otherwise it falls back to scanning local files. The query string is optional when at least one `--tag` is present. Repeated `--tag` filters use AND semantics and match exact tags. A tag-only match has a file-level `read_ref`; its `line` and `snippet` fields are `null`.
+
+## Source metadata and tags
+
+Markdown declares tags in a leading YAML front matter block:
+
+```markdown
+---
+tags: [inferlab, platform]
+---
+# Occupancy Notes
+```
+
+Typst declares the same metadata in one labelled `metadata` element:
+
+```typst
+#metadata((
+  tags: ("inferlab", "platform"),
+)) <typub-meta>
+
+= Occupancy Notes
+```
+
+`tags` is the only source metadata field currently consumed by conpub. Each tag must be lowercase kebab-case, contain only ASCII letters and digits separated by single hyphens, and be at most 255 bytes. conpub sorts and deduplicates tags. Tags are document-local; directory index pages do not pass tags to their children.
+
+Tags appear in `read`, `search`, `plan`, `publish`, and `sync` JSON. Publishing treats the local tag set as authoritative and replaces the page's complete Confluence label set. A label added manually or by another tool is removed on the next publish unless it also exists locally; publishing an empty local tag set clears every page label. conpub stages the source unchanged; typub consumes Markdown front matter during rendering so it does not appear in the page body.
 
 ## Page hierarchy
 
 Root-level documents in the bound source are published directly under the configured Confluence parent page.
 
-For non-root directories, add `_index.md` or `index.md`. That index document becomes the Confluence parent page for documents in the directory. Nested directories must also have index documents for every ancestor directory.
+For non-root directories, add `_index.md`, `index.md`, `_index.typ`, or `index.typ`. That index document becomes the Confluence parent page for documents in the directory. Nested directories must also have index documents for every ancestor directory.
 
 Example:
 
@@ -218,7 +245,7 @@ Default JSON output is agent-friendly, not share-ready. It can include local pat
 
 `index` stores a persistent local search index under the generated stage root. The index includes full document lines so `search` can return local context quickly. Do not commit or share generated stage roots, search indexes, sync state, typub status databases, or `.env` files.
 
-Precise title extraction for Typst and Markdown uses the `typst` CLI. When `typst` is unavailable or title evaluation fails, `conpub` falls back to the filename-derived title.
+Precise title and metadata extraction for Typst and Markdown uses the `typst` CLI. An untagged document falls back to a filename-derived title when inspection is unavailable. A document that declares source metadata fails with `SOURCE_METADATA_ERROR` instead of silently dropping its tags.
 
 ## Release Builds
 

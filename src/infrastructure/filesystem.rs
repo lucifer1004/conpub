@@ -1,4 +1,4 @@
-use super::title::title_from_file;
+use super::source_inspection::inspect_document_source;
 use crate::domain::Document;
 use crate::support::*;
 use std::collections::HashMap;
@@ -33,10 +33,12 @@ pub(crate) fn list_documents(root: &Path, scope: &Path) -> AppResult<Vec<Documen
             .unwrap_or("")
             .to_string();
 
+        let inspected = inspect_document_source(root, entry.path())?;
         docs.push(Document {
-            title: title_from_file(root, entry.path()),
+            title: inspected.title,
             path: rel_path,
             extension,
+            tags: inspected.tags,
         });
     }
 
@@ -93,10 +95,12 @@ pub(crate) fn resolve_document_subset(
                 .and_then(|ext| ext.to_str())
                 .unwrap_or("")
                 .to_string();
+            let inspected = inspect_document_source(root, &path)?;
             let document = Document {
                 path: relative_to(&path, root)?,
-                title: title_from_file(root, &path),
+                title: inspected.title,
                 extension,
+                tags: inspected.tags,
             };
             by_path.insert(document.path.clone(), document);
         } else {

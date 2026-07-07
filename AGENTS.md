@@ -37,7 +37,7 @@ The source tree follows a small DDD-style split:
 - `src/domain/`: local concepts and rules such as documents, hierarchy, sync
   planning, and model types.
 - `src/application/`: command orchestration and JSON response assembly.
-- `src/infrastructure/`: filesystem, config, title extraction, typub,
+- `src/infrastructure/`: filesystem, config, source inspection, typub,
   Confluence archive, search index, and state adapters.
 - `src/support/`: shared error, JSON, runtime, and validation helpers.
 - `tests/cli.rs`: black-box CLI behavior coverage.
@@ -112,6 +112,9 @@ without `--allow-dirty` once the package files are committed.
 ## Coding Rules
 
 - Prefer existing module patterns over new abstractions.
+- Declare dependency versions at the compatibility boundary: use `x` for
+  stable crates and `0.y` for pre-1.0 crates; let `Cargo.lock` pin exact
+  releases.
 - Keep errors structured through the existing `AppError` and JSON response
   helpers.
 - Preserve deterministic output for agent workflows.
@@ -126,7 +129,7 @@ without `--allow-dirty` once the package files are committed.
 Add or adjust tests when changing:
 
 - CLI arguments, JSON response shape, or error messages.
-- hierarchy, sync planning, title extraction, fingerprinting, or archive
+- hierarchy, sync planning, source metadata, fingerprinting, or archive
   behavior.
 - state layout, status DB interactions, file locking, or atomic writes.
 - release or CI workflow behavior.

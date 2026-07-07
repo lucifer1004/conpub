@@ -301,6 +301,7 @@ mod tests {
                 path: "projects/cuda-agent/notes.typ".to_string(),
                 title: "Notes".to_string(),
                 extension: "typ".to_string(),
+                tags: vec!["inferlab".to_string()],
             },
             slug: "projects-cuda-agent-notes".to_string(),
             fingerprint: "fingerprint-v1".to_string(),
@@ -310,6 +311,7 @@ mod tests {
         let publish_results = vec![PublishItemResult {
             path: "projects/cuda-agent/notes.typ".to_string(),
             title: "Notes".to_string(),
+            tags: vec!["inferlab".to_string()],
             slug: "projects-cuda-agent-notes".to_string(),
             parent_path: None,
             parent_id: Some("123456789".to_string()),

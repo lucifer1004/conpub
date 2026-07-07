@@ -43,6 +43,7 @@ pub(crate) fn build_sync_plan(
         items.push(SyncItemResult {
             path: snapshot.document.path.clone(),
             title: snapshot.document.title.clone(),
+            tags: snapshot.document.tags.clone(),
             slug: snapshot.slug.clone(),
             parent_path: snapshot.parent_path.clone(),
             parent_id: None,
@@ -66,6 +67,7 @@ pub(crate) fn build_sync_plan(
             .map(|(path, entry)| SyncItemResult {
                 path: path.clone(),
                 title: entry.title.clone(),
+                tags: Vec::new(),
                 slug: entry.slug.clone(),
                 parent_path: entry.parent_path.clone(),
                 parent_id: None,
@@ -258,6 +260,7 @@ mod tests {
                 path: "projects/cuda-agent/notes.typ".to_string(),
                 title: "Notes".to_string(),
                 extension: "typ".to_string(),
+                tags: vec!["inferlab".to_string()],
             },
             slug: "projects-cuda-agent-notes".to_string(),
             fingerprint: "fingerprint-v1".to_string(),
@@ -267,6 +270,7 @@ mod tests {
         let items = vec![SyncItemResult {
             path: "projects/cuda-agent/notes.typ".to_string(),
             title: "Notes".to_string(),
+            tags: vec!["inferlab".to_string()],
             slug: "projects-cuda-agent-notes".to_string(),
             parent_path: Some("projects/cuda-agent/_index.md".to_string()),
             parent_id: Some("parent-42".to_string()),
@@ -305,6 +309,7 @@ mod tests {
         SyncItemResult {
             path: path.to_string(),
             title: "Notes".to_string(),
+            tags: Vec::new(),
             slug: path.replace(['/', '.'], "-"),
             parent_path: None,
             parent_id: None,

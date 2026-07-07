@@ -497,6 +497,184 @@ fn document_titles_use_typst_introspection_with_filename_fallback() {
 }
 
 #[test]
+fn source_tags_flow_through_local_and_publish_outputs() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    let markdown =
+        "---\ntags: [platform, inferlab, platform]\n---\n# Occupancy\n\nWarp occupancy matters.\n";
+    fs::write(
+        fixture.root.join("projects/cuda-agent/perf/occupancy.md"),
+        markdown,
+    )
+    .expect("write tagged markdown");
+    fs::write(
+        fixture.root.join("projects/cuda-agent/notes.typ"),
+        "#metadata((tags: (\"typst\", \"inferlab\"))) <typub-meta>\n= CUDA Notes\n",
+    )
+    .expect("write tagged typst");
+
+    let plan = run_json(fixture.command().arg("plan"));
+    assert_eq!(
+        plan_item(&plan, "projects/cuda-agent/perf/occupancy.md")["tags"],
+        json!(["inferlab", "platform"])
+    );
+    assert_eq!(
+        plan_item(&plan, "projects/cuda-agent/notes.typ")["tags"],
+        json!(["inferlab", "typst"])
+    );
+
+    let read = run_json(
+        fixture
+            .command()
+            .arg("read")
+            .arg("projects/cuda-agent/perf/occupancy.md"),
+    );
+    assert_eq!(read["data"]["tags"], json!(["inferlab", "platform"]));
+
+    let dry_run = run_json(fixture.command().arg("publish").arg("--dry-run"));
+    assert_eq!(
+        plan_item(&dry_run, "projects/cuda-agent/perf/occupancy.md")["tags"],
+        json!(["inferlab", "platform"])
+    );
+    let staged = stage_root(&fixture).join("posts/projects-cuda-agent-perf-occupancy/content.md");
+    assert_eq!(
+        fs::read_to_string(staged).expect("read staged markdown"),
+        markdown
+    );
+}
+
+#[test]
+fn search_supports_tag_only_and_text_with_tag_intersection() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    fs::write(
+        fixture.root.join("projects/cuda-agent/perf/occupancy.md"),
+        "---\ntags: [inferlab, platform]\n---\n# Occupancy\n\nWarp occupancy matters.\n",
+    )
+    .expect("write tagged markdown");
+    fs::write(
+        fixture.root.join("projects/cuda-agent/notes.typ"),
+        "#metadata((tags: (\"inferlab\", \"typst\"))) <typub-meta>\n= CUDA Notes\n",
+    )
+    .expect("write tagged typst");
+
+    let tag_only = run_json(fixture.command().arg("search").arg("--tag").arg("inferlab"));
+    assert_eq!(tag_only["data"]["query"], Value::Null);
+    assert_eq!(tag_only["data"]["tags"], json!(["inferlab"]));
+    assert_eq!(
+        tag_only["data"]["matches"]
+            .as_array()
+            .expect("matches")
+            .len(),
+        2
+    );
+    assert!(tag_only["data"]["matches"][0]["line"].is_null());
+    assert!(tag_only["data"]["matches"][0]["snippet"].is_null());
+
+    let intersection = run_json(
+        fixture
+            .command()
+            .arg("search")
+            .arg("occupancy")
+            .arg("--tag")
+            .arg("platform")
+            .arg("--tag")
+            .arg("inferlab"),
+    );
+    assert_eq!(
+        intersection["data"]["matches"]
+            .as_array()
+            .expect("matches")
+            .len(),
+        2
+    );
+    assert!(
+        intersection["data"]["matches"]
+            .as_array()
+            .expect("matches")
+            .iter()
+            .all(|item| item["tags"] == json!(["inferlab", "platform"]))
+    );
+
+    run_json(fixture.command().arg("index"));
+    let indexed = run_json(
+        fixture
+            .command()
+            .arg("search")
+            .arg("--tag")
+            .arg("typst")
+            .arg("--tag")
+            .arg("inferlab"),
+    );
+    assert_eq!(indexed["data"]["index"]["used"], true);
+    assert_eq!(
+        indexed["data"]["matches"]
+            .as_array()
+            .expect("matches")
+            .len(),
+        1
+    );
+    assert_eq!(
+        indexed["data"]["matches"][0]["path"],
+        "projects/cuda-agent/notes.typ"
+    );
+}
+
+#[test]
+fn search_requires_a_filter_and_rejects_non_canonical_tags() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let missing = run_failure_json(fixture.command().arg("search"));
+    assert_eq!(missing["code"], "SEARCH_FILTER_REQUIRED");
+
+    let invalid = run_failure_json(
+        fixture
+            .command()
+            .arg("search")
+            .arg("--tag")
+            .arg("Not_Canonical"),
+    );
+    assert_eq!(invalid["code"], "INVALID_TAG");
+}
+
+#[test]
+fn source_metadata_rejects_non_canonical_tags() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    fs::write(
+        fixture.root.join("projects/cuda-agent/perf/occupancy.md"),
+        "---\ntags: [Not_Canonical]\n---\n# Occupancy\n",
+    )
+    .expect("write invalid metadata");
+
+    let value = run_failure_json(fixture.command().arg("plan"));
+
+    assert_eq!(value["code"], "INVALID_TAG");
+}
+
+#[test]
+fn source_metadata_rejects_non_array_tags() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    fs::write(
+        fixture.root.join("projects/cuda-agent/perf/occupancy.md"),
+        "---\ntags: inferlab\n---\n# Occupancy\n",
+    )
+    .expect("write invalid metadata type");
+
+    let value = run_failure_json(fixture.command().arg("plan"));
+
+    assert_eq!(value["code"], "SOURCE_METADATA_ERROR");
+    assert!(
+        value["message"]
+            .as_str()
+            .expect("message")
+            .contains("array of strings")
+    );
+}
+
+#[test]
 fn index_builds_and_search_uses_fresh_index() {
     let fixture = Fixture::new();
     configure(&fixture);
@@ -791,6 +969,12 @@ fn sync_rejects_missing_hierarchy_index_for_non_root_doc() {
 
     assert_eq!(value["ok"], false);
     assert_eq!(value["code"], "HIERARCHY_INDEX_MISSING");
+    assert!(
+        value["message"]
+            .as_str()
+            .expect("error message")
+            .contains("_index.typ")
+    );
 }
 
 #[test]
@@ -815,6 +999,37 @@ fn sync_path_subset_includes_parent_index_page() {
     assert_eq!(
         items[1]["parent_path"],
         "projects/cuda-agent/perf/_index.md"
+    );
+}
+
+#[test]
+fn sync_path_subset_accepts_typst_parent_index() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+    let directory = fixture.root.join("projects/cuda-agent/perf");
+    fs::remove_file(directory.join("_index.md")).expect("remove markdown directory index");
+    fs::write(
+        directory.join("_index.typ"),
+        "= Performance\n\nPerformance notes.\n",
+    )
+    .expect("write typst directory index");
+
+    let subset = run_json(
+        fixture
+            .command()
+            .arg("sync")
+            .arg("--dry-run")
+            .arg("perf/occupancy.md"),
+    );
+
+    assert_eq!(subset["ok"], true);
+    let items = subset["data"]["items"].as_array().expect("items array");
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0]["path"], "projects/cuda-agent/perf/_index.typ");
+    assert_eq!(items[1]["path"], "projects/cuda-agent/perf/occupancy.md");
+    assert_eq!(
+        items[1]["parent_path"],
+        "projects/cuda-agent/perf/_index.typ"
     );
 }
 
@@ -1129,6 +1344,46 @@ fn sync_fingerprint_includes_shared_assets() {
     let first = run_json(fixture.command().arg("sync").arg("--dry-run"));
     write_sync_state_from_dry_run(&fixture, &first);
     fs::write(fixture.root.join("_assets/diagram.png"), "asset v2\n").expect("update asset");
+
+    let changed = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    assert_eq!(changed["data"]["summary"]["update"], 3);
+    assert_eq!(changed["data"]["summary"]["unchanged"], 0);
+    assert_eq!(changed["data"]["publishable"], 3);
+}
+
+#[test]
+fn sync_invalidates_v2_fingerprints_after_publish_semantics_change() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let first = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run(&fixture, &first);
+
+    let mut shared_assets = blake3::Hasher::new();
+    shared_assets.update(b"conpub-shared-assets-v1\0");
+    let shared_assets = shared_assets.finalize().to_hex().to_string();
+
+    let state_path = sync_state_path(&fixture);
+    let mut state: Value =
+        serde_json::from_str(&fs::read_to_string(&state_path).expect("read current sync state"))
+            .expect("parse current sync state");
+    for item in first["data"]["items"].as_array().expect("sync items") {
+        let path = item["path"].as_str().expect("document path");
+        let bytes = fs::read(fixture.root.join(path)).expect("read document");
+        let mut legacy = blake3::Hasher::new();
+        legacy.update(b"conpub-document-v2\0");
+        legacy.update(path.as_bytes());
+        legacy.update(b"\0");
+        legacy.update(&bytes);
+        legacy.update(b"\0shared-assets\0");
+        legacy.update(shared_assets.as_bytes());
+        state["documents"][path]["fingerprint"] = json!(legacy.finalize().to_hex().to_string());
+    }
+    fs::write(
+        &state_path,
+        serde_json::to_string_pretty(&state).expect("encode v2 sync state"),
+    )
+    .expect("write v2 sync state");
 
     let changed = run_json(fixture.command().arg("sync").arg("--dry-run"));
     assert_eq!(changed["data"]["summary"]["update"], 3);

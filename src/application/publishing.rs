@@ -65,6 +65,7 @@ pub(crate) fn cmd_plan() -> AppResult<serde_json::Value> {
             Some(missing) => PlanItem {
                 path: item.path,
                 title: item.title,
+                tags: item.tags,
                 action: "blocked".to_string(),
                 reason: format!(
                     "references assets not present in _assets/: {}",
@@ -75,6 +76,7 @@ pub(crate) fn cmd_plan() -> AppResult<serde_json::Value> {
             None => PlanItem {
                 path: item.path,
                 title: item.title,
+                tags: item.tags,
                 action: item.action,
                 reason: item.reason.unwrap_or_default(),
                 confluence_url: item.url,
@@ -456,6 +458,7 @@ fn dry_run_publish_items(snapshots: &[DocumentSnapshot]) -> Vec<PublishItemResul
         .map(|item| PublishItemResult {
             path: item.document.path.clone(),
             title: item.document.title.clone(),
+            tags: item.document.tags.clone(),
             slug: item.slug.clone(),
             parent_path: item.parent_path.clone(),
             parent_id: None,

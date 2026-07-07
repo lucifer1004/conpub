@@ -62,6 +62,7 @@ pub(crate) async fn publish_snapshots_with_hierarchy(
                 results.push(PublishItemResult {
                     path: snapshot.document.path,
                     title: snapshot.document.title,
+                    tags: snapshot.document.tags,
                     slug: snapshot.slug,
                     parent_path: snapshot.parent_path,
                     parent_id: None,
@@ -93,6 +94,7 @@ pub(crate) async fn publish_snapshots_with_hierarchy(
                 results.push(PublishItemResult {
                     path: snapshot.document.path,
                     title: snapshot.document.title,
+                    tags: snapshot.document.tags,
                     slug: snapshot.slug,
                     parent_path: snapshot.parent_path,
                     parent_id: Some(parent_id),
@@ -108,6 +110,7 @@ pub(crate) async fn publish_snapshots_with_hierarchy(
             Err(err) => results.push(PublishItemResult {
                 path: snapshot.document.path,
                 title: snapshot.document.title,
+                tags: snapshot.document.tags,
                 slug: snapshot.slug,
                 parent_path: snapshot.parent_path,
                 parent_id: Some(parent_id),
@@ -338,7 +341,7 @@ pub(crate) fn content_meta_for(
         title: document.title.clone(),
         created,
         updated: None,
-        tags: Vec::new(),
+        tags: document.tags.clone(),
         categories: Vec::new(),
         published: Some(true),
         theme: None,
@@ -351,4 +354,29 @@ pub(crate) fn content_meta_for(
 pub(crate) fn publish_stage_root(resolved: &ResolvedConfig) -> AppResult<PathBuf> {
     let key = format!("{}-{}", resolved.target.space, resolved.target.parent_id);
     Ok(conpub_home()?.join("typub-stage").join(sanitize_slug(&key)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_meta_carries_source_tags() -> AppResult<()> {
+        let document = Document {
+            path: "notes.md".to_string(),
+            title: "Notes".to_string(),
+            extension: "md".to_string(),
+            tags: vec!["inferlab".to_string(), "platform".to_string()],
+        };
+        let target = Target {
+            base_url: Some("https://example.atlassian.net".to_string()),
+            space: "GPU".to_string(),
+            parent_id: "42".to_string(),
+        };
+
+        let meta = content_meta_for(&document, &target, "42")?;
+
+        assert_eq!(meta.tags, document.tags);
+        Ok(())
+    }
 }
