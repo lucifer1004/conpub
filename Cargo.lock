@@ -4339,9 +4339,9 @@ dependencies = [
 
 [[package]]
 name = "typub-adapter-confluence"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6487acf1ebedb97041f371714201cff72c45dc77d27cccfeb64ebd9792c0196f"
+checksum = "9052f1b073f87f4911a13608e103749f366078a8bfc32d5f7ffffda3af87c290"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4606,9 +4606,9 @@ dependencies = [
 
 [[package]]
 name = "typub-engine"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58a361f40a5b265d00db2c22e23c1d545a25e61ed2065d972c18e4a989a24163"
+checksum = "d9f3e5de11b117c5824b489cf918a2cfefb2dccef040df18b3db3ed0b3b968e4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4730,9 +4730,9 @@ dependencies = [
 
 [[package]]
 name = "typub-storage"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1228a6f96e0354cbdaceec60409c43968e090fabbc0518aa95a15cc6fdd1d274"
+checksum = "265472032319bb45353671088139904527b1cc149dc1130720c0f0115da28e56"
 dependencies = [
  "anyhow",
  "chrono",
