@@ -1,3 +1,4 @@
+use super::publishing::load_publish_state_view;
 use crate::domain::*;
 use crate::infrastructure::*;
 use crate::support::*;
@@ -114,35 +115,23 @@ pub(crate) fn cmd_status() -> AppResult<serde_json::Value> {
     let paths = config_paths()?;
     let user = effective_user_config(&paths.user_config)?;
     let project = load_project_config(&paths.project_config)?;
-    let resolved = match (user.root.is_some(), &project) {
-        (true, Some(_)) => Some(resolve_config()?),
-        _ => None,
-    };
-    let (docs, sync) = if let Some(config) = &resolved {
-        let root = PathBuf::from(&config.root);
-        let source = PathBuf::from(&config.source_abs);
-        let documents = list_documents(&root, &source)?;
-        validate_directory_index_conflicts(config, &documents)?;
-        validate_unique_slugs(&documents)?;
-        let hierarchy = build_hierarchy(config, &documents, &documents)?;
-        let snapshots = snapshot_hierarchy(&root, &hierarchy)?;
-        let stage_root = publish_stage_root(config)?;
-        let identity = sync_state_identity(config);
-        let state_path = sync_state_path(&stage_root);
-        let state = load_sync_state(&state_path, &identity)?;
-        let (items, publish_snapshots) = build_sync_plan(&snapshots, &state, true, &config.source);
+    let (resolved, docs, sync) = if user.root.is_some() && project.is_some() {
+        let view = load_publish_state_view()?;
+        let (items, publish_snapshots) =
+            build_sync_plan(&view.snapshots, &view.state, true, &view.resolved.source);
 
         (
-            documents.len(),
+            Some(view.resolved),
+            view.documents.len(),
             Some(json!({
-                "state_file": display_path(&state_path),
-                "tracked": state.documents.len(),
+                "state_file": display_path(&view.state_path),
+                "tracked": view.state.documents.len(),
                 "publishable": publish_snapshots.len(),
                 "summary": sync_counts(&items),
             })),
         )
     } else {
-        (0, None)
+        (None, 0, None)
     };
 
     Ok(ok(json!({

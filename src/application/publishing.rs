@@ -2,47 +2,114 @@ use crate::domain::*;
 use crate::infrastructure::*;
 use crate::support::*;
 use serde_json::json;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
-pub(crate) fn cmd_plan() -> AppResult<serde_json::Value> {
+/// Read-only aggregate of the bound source and its publish state: every
+/// document fingerprinted next to what was last published. Shared by
+/// `status` and `plan`; takes no lock, stages nothing, and performs no
+/// remote calls. The write path (`publish`/`sync`) keeps its own
+/// `prepare_publish_set`, which layers subset selection, the hard
+/// missing-asset refusal, and staging on top of the same inputs.
+pub(super) struct PublishStateView {
+    pub(super) resolved: ResolvedConfig,
+    pub(super) stage_root: PathBuf,
+    pub(super) state_path: PathBuf,
+    pub(super) documents: Vec<Document>,
+    pub(super) snapshots: Vec<DocumentSnapshot>,
+    pub(super) state: SyncState,
+}
+
+pub(super) fn load_publish_state_view() -> AppResult<PublishStateView> {
     let resolved = resolve_config()?;
     let root = PathBuf::from(&resolved.root);
     let source = PathBuf::from(&resolved.source_abs);
     let documents = list_documents(&root, &source)?;
     validate_directory_index_conflicts(&resolved, &documents)?;
     validate_unique_slugs(&documents)?;
-    let missing_assets: std::collections::HashMap<String, Vec<String>> =
-        missing_staged_asset_references(&root, &documents)?
+    let hierarchy = build_hierarchy(&resolved, &documents, &documents)?;
+    let snapshots = snapshot_hierarchy(&root, &hierarchy)?;
+    let stage_root = publish_stage_root(&resolved)?;
+    let identity = sync_state_identity(&resolved);
+    let state_path = sync_state_path(&stage_root);
+    let state = load_sync_state(&state_path, &identity)?;
+
+    Ok(PublishStateView {
+        resolved,
+        stage_root,
+        state_path,
+        documents,
+        snapshots,
+        state,
+    })
+}
+
+pub(crate) fn cmd_plan() -> AppResult<serde_json::Value> {
+    let view = load_publish_state_view()?;
+    let root = PathBuf::from(&view.resolved.root);
+    let missing_assets: HashMap<String, Vec<String>> =
+        missing_staged_asset_references(&root, &view.documents)?
             .into_iter()
             .collect();
-    let items = documents
+
+    let (mut sync_items, _) =
+        build_sync_plan(&view.snapshots, &view.state, true, &view.resolved.source);
+    join_sync_items_with_typub_status(&view.stage_root, &mut sync_items)?;
+
+    // A document that references assets the shared `_assets/` staging cannot
+    // provide is blocked regardless of its publish-state verdict: publishing
+    // it would fail locally, so no state-derived action applies.
+    let items = sync_items
         .into_iter()
-        .map(|doc| match missing_assets.get(&doc.path) {
+        .map(|item| match missing_assets.get(&item.path) {
             Some(missing) => PlanItem {
-                path: doc.path,
-                title: doc.title,
+                path: item.path,
+                title: item.title,
                 action: "blocked".to_string(),
                 reason: format!(
                     "references assets not present in _assets/: {}",
                     missing.join(", ")
                 ),
-                confluence_url: None,
+                confluence_url: item.url,
             },
             None => PlanItem {
-                path: doc.path,
-                title: doc.title,
-                action: "publish".to_string(),
-                reason: "status tracking is not implemented yet".to_string(),
-                confluence_url: None,
+                path: item.path,
+                title: item.title,
+                action: item.action,
+                reason: item.reason.unwrap_or_default(),
+                confluence_url: item.url,
             },
         })
         .collect::<Vec<_>>();
 
+    let publishable = items
+        .iter()
+        .filter(|item| item.action == "create" || item.action == "update")
+        .count();
+
     Ok(ok(json!({
-        "target": resolved.target,
+        "target": view.resolved.target,
+        "state_file": display_path(&view.state_path),
         "count": items.len(),
+        "publishable": publishable,
+        "summary": plan_counts(&items),
         "items": items,
     })))
+}
+
+fn plan_counts(items: &[PlanItem]) -> serde_json::Value {
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for item in items {
+        *counts.entry(item.action.as_str()).or_default() += 1;
+    }
+
+    json!({
+        "create": counts.get("create").copied().unwrap_or(0),
+        "update": counts.get("update").copied().unwrap_or(0),
+        "unchanged": counts.get("unchanged").copied().unwrap_or(0),
+        "deleted": counts.get("deleted").copied().unwrap_or(0),
+        "blocked": counts.get("blocked").copied().unwrap_or(0),
+    })
 }
 
 pub(crate) fn cmd_publish(

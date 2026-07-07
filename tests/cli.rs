@@ -834,6 +834,123 @@ fn sync_rejects_v1_sync_state_without_legacy_migration() {
     assert_eq!(value["code"], "STATE_VERSION_UNSUPPORTED");
 }
 
+#[test]
+fn plan_reports_create_for_untracked_documents() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let plan = run_json(fixture.command().arg("plan"));
+
+    assert_eq!(plan["ok"], true);
+    assert_eq!(plan["data"]["count"], 3);
+    assert_eq!(plan["data"]["publishable"], 3);
+    assert_eq!(plan["data"]["summary"]["create"], 3);
+    assert_eq!(plan["data"]["summary"]["unchanged"], 0);
+    let item = plan_item(&plan, "projects/cuda-agent/notes.typ");
+    assert_eq!(item["action"], "create");
+    assert_eq!(item["reason"], "not present in local publish state");
+}
+
+#[test]
+fn plan_reports_unchanged_from_publish_state_and_flags_edits() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let sync = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run(&fixture, &sync);
+
+    let plan = run_json(fixture.command().arg("plan"));
+    assert_eq!(plan["data"]["publishable"], 0);
+    assert_eq!(plan["data"]["summary"]["unchanged"], 3);
+    assert_eq!(
+        plan_item(&plan, "projects/cuda-agent/perf/occupancy.md")["action"],
+        "unchanged"
+    );
+
+    fs::write(
+        fixture.root.join("projects/cuda-agent/perf/occupancy.md"),
+        "# Occupancy\n\nRevised occupancy notes.\n",
+    )
+    .expect("update markdown");
+
+    let plan = run_json(fixture.command().arg("plan"));
+    assert_eq!(plan["data"]["publishable"], 1);
+    assert_eq!(plan["data"]["summary"]["update"], 1);
+    assert_eq!(plan["data"]["summary"]["unchanged"], 2);
+    assert_eq!(
+        plan_item(&plan, "projects/cuda-agent/perf/occupancy.md")["action"],
+        "update"
+    );
+}
+
+#[test]
+fn plan_blocks_missing_assets_over_the_state_verdict() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let sync = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run(&fixture, &sync);
+    fs::write(
+        fixture.root.join("projects/cuda-agent/perf/occupancy.md"),
+        "# Occupancy\n\n![figure](assets/missing-figure.png)\n",
+    )
+    .expect("update markdown");
+
+    let plan = run_json(fixture.command().arg("plan"));
+    let item = plan_item(&plan, "projects/cuda-agent/perf/occupancy.md");
+    assert_eq!(item["action"], "blocked");
+    let reason = item["reason"].as_str().expect("reason string");
+    assert!(reason.contains("assets/missing-figure.png"), "{reason}");
+    assert_eq!(plan["data"]["publishable"], 0);
+    assert_eq!(plan["data"]["summary"]["blocked"], 1);
+    assert_eq!(plan["data"]["summary"]["update"], 0);
+}
+
+#[test]
+fn plan_and_status_agree_on_the_publish_state_summary() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let sync = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    write_sync_state_from_dry_run(&fixture, &sync);
+    fs::write(
+        fixture.root.join("projects/cuda-agent/perf/occupancy.md"),
+        "# Occupancy\n\nRevised occupancy notes.\n",
+    )
+    .expect("update markdown");
+
+    let plan = run_json(fixture.command().arg("plan"));
+    let status = run_json(fixture.command().arg("status"));
+
+    for key in ["create", "update", "unchanged", "deleted"] {
+        assert_eq!(
+            plan["data"]["summary"][key], status["data"]["sync"]["summary"][key],
+            "summary key {key}"
+        );
+    }
+    assert_eq!(
+        plan["data"]["publishable"],
+        status["data"]["sync"]["publishable"]
+    );
+}
+
+#[test]
+fn plan_adopts_typub_status_for_untracked_documents() {
+    let fixture = Fixture::new();
+    configure(&fixture);
+
+    let sync = run_json(fixture.command().arg("sync").arg("--dry-run"));
+    seed_typub_platform_status(&fixture, &sync, "projects/cuda-agent/notes.typ", "4242");
+
+    let plan = run_json(fixture.command().arg("plan"));
+    let item = plan_item(&plan, "projects/cuda-agent/notes.typ");
+    assert_eq!(item["action"], "update");
+    assert_eq!(
+        item["confluence_url"],
+        "https://example.atlassian.net/wiki/spaces/GPU/pages/4242/CUDA Notes"
+    );
+}
+
 fn configure(fixture: &Fixture) {
     configure_with_base_url(fixture, "https://example.atlassian.net/wiki");
 }

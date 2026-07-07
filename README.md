@@ -81,6 +81,8 @@ Sync fingerprints include the document and the safe shared `_assets` set. Changi
 
 `plan` additionally scans each document for `assets/<name>` references (markdown images/links, typst `#image("assets/...")`, html `src="assets/..."`) and marks documents whose references are not present in `_assets/` as `blocked`, naming each missing reference. `publish` and `sync` refuse such a set locally, before staging or any remote write — an asset placed next to the document instead of under `<root>/_assets/` is caught here instead of failing half-way through a remote publish.
 
+`plan` consults the local publish state (the same view `status` reports): unblocked documents carry the state-derived action — `create`, `update`, `unchanged`, or `deleted` — with the reason, the last published Confluence URL when typub status knows the page, and a `publishable` count plus per-action `summary`. A clean plan is `publishable: 0`. `plan` is entirely local; it takes no lock and writes nothing. Note that `publish` does not consult this state — it republishes the whole set unconditionally; `sync` is the incremental verb.
+
 The local sync state is written under a per-target file lock with atomic replacement and is bound to the configured root, base URL, space, and parent page. Multiple project bindings that share the same root and Confluence target share this state. The bound source only limits the current scan and deleted-file detection scope. The state stores only local KB metadata such as fingerprints, titles, slugs, parent paths, and sync timestamps.
 
 Remote Confluence IDs, URLs, and publish status are owned by typub's status database under the generated stage root:
